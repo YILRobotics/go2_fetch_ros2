@@ -6,6 +6,8 @@ from __future__ import annotations
 import threading
 from collections import deque
 from dataclasses import dataclass
+import os
+import traceback
 from typing import Optional, Tuple
 
 import cv2
@@ -55,8 +57,10 @@ class CubeTrackerNode(Node):
         self.cube_state_topic = self.get_parameter('cube_state_topic').value
         self.cube_visible_topic = self.get_parameter('cube_visible_topic').value
         self.debug_image_topic = self.get_parameter('debug_image_topic').value
+        self.mask_image_topic = self.get_parameter('mask_image_topic').value
+        self.pre_yolo_image_topic = self.get_parameter('pre_yolo_image_topic').value
 
-        self.model_path = self.get_parameter('model_path').value
+        self.model_path = (self.get_parameter('model_path').value)
         self.target_classes = set(self.get_parameter('target_classes').value)
         self.conf_threshold = float(self.get_parameter('conf_threshold').value)
         self.max_mask_samples = int(self.get_parameter('max_mask_samples').value)
@@ -67,8 +71,17 @@ class CubeTrackerNode(Node):
         self.detection_timeout_s = float(self.get_parameter('detection_timeout_s').value)
         self.velocity_window_s = float(self.get_parameter('velocity_window_s').value)
         self.processing_rate_hz = float(self.get_parameter('processing_rate_hz').value)
+        self.status_log_rate_hz = float(self.get_parameter('status_log_rate_hz').value)
+        self.pipeline_log_rate_hz = float(self.get_parameter('pipeline_log_rate_hz').value)
+        self.enable_hsv_pre_mask = bool(self.get_parameter('enable_hsv_pre_mask').value)
+        self.publish_pre_yolo_image = bool(self.get_parameter('publish_pre_yolo_image').value)
+        self.hsv_green_lower = np.array(self.get_parameter('hsv_green_lower').value, dtype=np.uint8)
+        self.hsv_green_upper = np.array(self.get_parameter('hsv_green_upper').value, dtype=np.uint8)
+        self.hsv_blue_lower = np.array(self.get_parameter('hsv_blue_lower').value, dtype=np.uint8)
+        self.hsv_blue_upper = np.array(self.get_parameter('hsv_blue_upper').value, dtype=np.uint8)
         self.target_frame = self.get_parameter('target_frame').value
         self.publish_debug_image = bool(self.get_parameter('publish_debug_image').value)
+        self.publish_mask_image = bool(self.get_parameter('publish_mask_image').value)
         self.tf_timeout_s = float(self.get_parameter('tf_timeout_s').value)
 
         self._bridge = CvBridge()
@@ -81,15 +94,22 @@ class CubeTrackerNode(Node):
         self._last_detection_time: Optional[float] = None
         self._last_visible = False
         self._processing = False
+        self._last_status_log_time = 0.0
+        self._last_yolo_log_time = 0.0
+        self._last_pipeline_log_time = 0.0
+        self._last_centroid_reject_reason = ''
 
         self._model = self._load_model()
 
         self._state_pub = self.create_publisher(Odometry, self.cube_state_topic, 10)
         self._visible_pub = self.create_publisher(Bool, self.cube_visible_topic, 10)
         self._debug_pub = self.create_publisher(Image, self.debug_image_topic, 2)
+        self._mask_pub = self.create_publisher(Image, self.mask_image_topic, 2)
+        self._pre_yolo_pub = self.create_publisher(Image, self.pre_yolo_image_topic, 2)
 
         self._tf_buffer = tf2_ros.Buffer(cache_time=Duration(seconds=5.0))
-        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self, spin_thread=True)
+        # Use the node executor thread for TF callbacks to avoid extra thread shutdown races.
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self, spin_thread=False)
 
         sensor_qos = QoSProfile(
             depth=10,
@@ -102,7 +122,7 @@ class CubeTrackerNode(Node):
         self._sync = ApproximateTimeSynchronizer(
             [self._image_sub, self._pointcloud_sub],
             queue_size=30,
-            slop=0.08,
+            slop=0.2,
             allow_headerless=False,
         )
         self._sync.registerCallback(self._sync_cb)
@@ -119,10 +139,12 @@ class CubeTrackerNode(Node):
         self.declare_parameter('cube_state_topic', '/go2_fetch/cube_state')
         self.declare_parameter('cube_visible_topic', '/go2_fetch/cube_visible')
         self.declare_parameter('debug_image_topic', '/go2_fetch/cube_debug_image')
+        self.declare_parameter('mask_image_topic', '/go2_fetch/cube_mask_image')
+        self.declare_parameter('pre_yolo_image_topic', '/go2_fetch/cube_pre_yolo_image')
 
-        self.declare_parameter('model_path', 'yoloe-26l-seg.pt')
-        self.declare_parameter('target_classes', ['cube', 'box', 'black cube', 'bottle'])
-        self.declare_parameter('conf_threshold', 0.15)
+        self.declare_parameter('model_path', '/home/ferdinand/unitree/go2_fetch_ros2/models/yoloe-26l-seg.pt')
+        self.declare_parameter('target_classes', ['ball'])
+        self.declare_parameter('conf_threshold', 0.1)
 
         self.declare_parameter('max_mask_samples', 2500)
         self.declare_parameter('min_inlier_points', 30)
@@ -131,6 +153,14 @@ class CubeTrackerNode(Node):
         self.declare_parameter('outlier_mad_scale', 3.0)
 
         self.declare_parameter('processing_rate_hz', 20.0)
+        self.declare_parameter('status_log_rate_hz', 2.0)
+        self.declare_parameter('pipeline_log_rate_hz', 5.0)
+        self.declare_parameter('enable_hsv_pre_mask', False)
+        self.declare_parameter('publish_pre_yolo_image', True)
+        self.declare_parameter('hsv_green_lower', [35, 40, 40])
+        self.declare_parameter('hsv_green_upper', [90, 255, 255])
+        self.declare_parameter('hsv_blue_lower', [90, 40, 40])
+        self.declare_parameter('hsv_blue_upper', [135, 255, 255])
         self.declare_parameter('detection_timeout_s', 0.35)
         self.declare_parameter('velocity_window_s', 0.6)
 
@@ -138,14 +168,25 @@ class CubeTrackerNode(Node):
         self.declare_parameter('tf_timeout_s', 0.05)
 
         self.declare_parameter('publish_debug_image', False)
+        self.declare_parameter('publish_mask_image', True)
 
     def _load_model(self):
         if YOLO is None:
             self.get_logger().error('ultralytics is not installed. Cube tracker cannot run YOLO inference.')
             return None
 
-        model = YOLO(self.model_path)
+        resolved_model_path = os.path.expanduser(os.path.expandvars(str(self.model_path)))
+        self.model_path = resolved_model_path
+        model = YOLO(resolved_model_path)
+        # if self.target_classes:
+        #     try:
+        #         model.set_classes(list(self.target_classes))
+        #     except Exception as exc:
+        #         self.get_logger().warn(
+        #             f'Failed to set YOLO text classes ({exc}). Running with model default classes.'
+        #         )
         if self.target_classes:
+            self.get_logger().info(f"Setting YOLO classes to: {list(self.target_classes)}")
             model.set_classes(list(self.target_classes))
         return model
 
@@ -181,8 +222,9 @@ class CubeTrackerNode(Node):
                 self._last_detection_time = now_s
                 self._publish_detection(det, stamp)
             self._update_visibility_from_timeout(now_s)
+            self._log_status(now_s, det)
         except Exception as exc:
-            self.get_logger().error(f'Cube tracker callback failed: {exc}')
+            self.get_logger().error(f'Cube tracker callback failed: {exc}\n{traceback.format_exc()}')
         finally:
             self._processing = False
 
@@ -191,21 +233,51 @@ class CubeTrackerNode(Node):
             return None
 
         image = self._bridge.imgmsg_to_cv2(image_msg, desired_encoding='bgr8')
-        yolo_out = self._model.predict(image, verbose=False, conf=self.conf_threshold)
+        yolo_input = image
+        if self.enable_hsv_pre_mask:
+            yolo_input, color_mask = self._apply_hsv_green_blue_mask(image)
+            keep_ratio = float(np.count_nonzero(color_mask)) / float(color_mask.size)
+            self._maybe_log_pipeline(f'pipeline: hsv pre-mask enabled keep_ratio={keep_ratio:.3f}')
+
+        if self.publish_pre_yolo_image:
+            self._publish_pre_yolo_image(yolo_input, image_msg)
+
+        yolo_out = self._model.predict(yolo_input, verbose=False, conf=self.conf_threshold)
         if not yolo_out:
             return None
 
         result = yolo_out[0]
+        self._maybe_log_yolo_detections(result)
         best_idx = self._pick_best_detection(result)
         if best_idx is None:
+            self._maybe_log_pipeline('pipeline: no detection selected after class/conf filtering')
             return None
+
+        boxes = result.boxes
+        if boxes is not None and len(boxes) > best_idx:
+            names = result.names if hasattr(result, 'names') else {}
+            cls_id = int(boxes.cls[best_idx].item())
+            conf = float(boxes.conf[best_idx].item())
+            label = names.get(cls_id, str(cls_id)) if isinstance(names, dict) else str(cls_id)
+            self._maybe_log_pipeline(f'pipeline: selected detection label={label} conf={conf:.2f} idx={best_idx}')
 
         mask = self._extract_mask(result, best_idx, image.shape[:2])
         if mask is None:
+            self._maybe_log_pipeline('pipeline: mask rejected (too few mask pixels)')
             return None
+
+        self._maybe_log_pipeline(f'pipeline: mask pixels={int(mask.sum())}')
+
+        if self.publish_mask_image:
+            self._publish_mask(mask, image_msg)
+
+        if self.publish_debug_image:
+            self._publish_debug(image, result, mask)
 
         centroid = self._extract_filtered_centroid(mask, cloud_msg)
         if centroid is None:
+            reason = self._last_centroid_reject_reason or 'unknown reason'
+            self._maybe_log_pipeline(f'pipeline: distance unavailable, centroid rejected ({reason})')
             return None
 
         x, y, z = centroid
@@ -232,10 +304,69 @@ class CubeTrackerNode(Node):
         vel_xy = self._estimate_velocity(pos_xy)
 
         if self.publish_debug_image:
-            self._publish_debug(image, result, best_idx, mask, pos_xy, vel_xy)
+            self._publish_debug(image, result, mask, pos_xy, vel_xy)
 
         distance_m = float(np.linalg.norm([point.point.x, point.point.y, point.point.z]))
+
+        self.get_logger().info(
+            f'detected: pos=({pos_xy[0]:.2f}, {pos_xy[1]:.2f}) '
+            f'vel=({vel_xy[0]:.2f}, {vel_xy[1]:.2f}) '
+            f'dist={distance_m:.2f}m frame={out_frame}'
+        )
         return DetectionResult(position_xy=pos_xy, velocity_xy=vel_xy, frame_id=out_frame, distance_m=distance_m)
+
+    def _maybe_log_yolo_detections(self, result) -> None:
+        now_s = self.get_clock().now().nanoseconds * 1e-9
+        if self.status_log_rate_hz <= 0.0:
+            return
+        period = 1.0 / self.status_log_rate_hz
+        if (now_s - self._last_yolo_log_time) < period:
+            return
+        self._last_yolo_log_time = now_s
+
+        boxes = result.boxes
+        if boxes is None or len(boxes) == 0:
+            self.get_logger().info('yolo: no detections')
+            return
+
+        names = result.names if hasattr(result, 'names') else {}
+        labels = []
+        for i in range(len(boxes)):
+            cls_id = int(boxes.cls[i].item())
+            conf = float(boxes.conf[i].item())
+            label = names.get(cls_id, str(cls_id)) if isinstance(names, dict) else str(cls_id)
+            labels.append(f'{label}:{conf:.2f}')
+
+        self.get_logger().info(f'yolo: {len(labels)} detections -> {", ".join(labels[:6])}')
+
+    def _maybe_log_pipeline(self, message: str) -> None:
+        if self.pipeline_log_rate_hz <= 0.0:
+            return
+        now_s = self.get_clock().now().nanoseconds * 1e-9
+        period = 1.0 / self.pipeline_log_rate_hz
+        if (now_s - self._last_pipeline_log_time) < period:
+            return
+        self._last_pipeline_log_time = now_s
+        self.get_logger().info(message)
+
+    def _publish_mask(self, mask: np.ndarray, image_msg: Image) -> None:
+        mask_u8 = (mask.astype(np.uint8) * 255)
+        mask_msg = self._bridge.cv2_to_imgmsg(mask_u8, encoding='mono8')
+        mask_msg.header = image_msg.header
+        self._mask_pub.publish(mask_msg)
+
+    def _publish_pre_yolo_image(self, image: np.ndarray, image_msg: Image) -> None:
+        msg = self._bridge.cv2_to_imgmsg(image, encoding='bgr8')
+        msg.header = image_msg.header
+        self._pre_yolo_pub.publish(msg)
+
+    def _apply_hsv_green_blue_mask(self, image: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        green_mask = cv2.inRange(hsv, self.hsv_green_lower, self.hsv_green_upper)
+        blue_mask = cv2.inRange(hsv, self.hsv_blue_lower, self.hsv_blue_upper)
+        keep_mask = cv2.bitwise_or(green_mask, blue_mask)
+        filtered = cv2.bitwise_and(image, image, mask=keep_mask)
+        return filtered, keep_mask
 
     def _pick_best_detection(self, result) -> Optional[int]:
         boxes = result.boxes
@@ -292,6 +423,7 @@ class CubeTrackerNode(Node):
     def _extract_filtered_centroid(self, mask: np.ndarray, cloud_msg: PointCloud2) -> Optional[np.ndarray]:
         ys, xs = np.where(mask)
         if xs.size == 0:
+            self._last_centroid_reject_reason = 'mask has zero valid pixels'
             return None
 
         if xs.size > self.max_mask_samples:
@@ -299,25 +431,64 @@ class CubeTrackerNode(Node):
             xs = xs[pick]
             ys = ys[pick]
 
-        uvs = [(int(u), int(v)) for u, v in zip(xs.tolist(), ys.tolist())]
+        width = int(cloud_msg.width)
+        height = int(cloud_msg.height)
+        if width <= 0 or height <= 0:
+            self._last_centroid_reject_reason = f'invalid cloud dimensions width={width} height={height}'
+            return None
+
+        valid = np.logical_and.reduce((
+            xs >= 0,
+            ys >= 0,
+            xs < width,
+            ys < height,
+        ))
+        xs = xs[valid]
+        ys = ys[valid]
+        if xs.size == 0:
+            self._last_centroid_reject_reason = 'all sampled mask pixels fell outside cloud bounds'
+            return None
+
+        # ROS 2 Humble read_points_numpy() indexes by flattened point indices.
+        flat_indices = ys.astype(np.int64) * width + xs.astype(np.int64)
         points = point_cloud2.read_points_numpy(
             cloud_msg,
             field_names=['x', 'y', 'z'],
             skip_nans=False,
-            uvs=uvs,
+            uvs=flat_indices,
         )
 
+        points = np.asarray(points)
         if points.size == 0:
+            self._last_centroid_reject_reason = 'read_points_numpy returned zero points'
+            return None
+        if points.ndim == 1:
+            if points.shape[0] != 3:
+                self._last_centroid_reject_reason = f'unexpected 1D points shape {points.shape}'
+                return None
+            points = points.reshape(1, 3)
+        elif points.ndim != 2 or points.shape[1] != 3:
+            points = points.reshape((-1, 3))
+
+        if points.size == 0:
+            self._last_centroid_reject_reason = 'points empty after reshape'
             return None
 
         finite_mask = np.isfinite(points).all(axis=1)
         points = points[finite_mask]
         if points.shape[0] < self.min_inlier_points:
+            self._last_centroid_reject_reason = (
+                f'too few finite points: {points.shape[0]} < min_inlier_points({self.min_inlier_points})'
+            )
             return None
 
         depth_mask = np.logical_and(points[:, 2] > self.min_depth_m, points[:, 2] < self.max_depth_m)
         points = points[depth_mask]
         if points.shape[0] < self.min_inlier_points:
+            self._last_centroid_reject_reason = (
+                f'too few depth-in-range points: {points.shape[0]} < min_inlier_points({self.min_inlier_points}) '
+                f'for z in ({self.min_depth_m}, {self.max_depth_m})'
+            )
             return None
 
         median = np.median(points, axis=0)
@@ -328,7 +499,13 @@ class CubeTrackerNode(Node):
         points = points[inliers]
 
         if points.shape[0] < self.min_inlier_points:
+            self._last_centroid_reject_reason = (
+                f'too few MAD inliers: {points.shape[0]} < min_inlier_points({self.min_inlier_points}) '
+                f'with scale={self.outlier_mad_scale}'
+            )
             return None
+
+        self._last_centroid_reject_reason = ''
 
         return np.mean(points, axis=0)
 
@@ -375,14 +552,25 @@ class CubeTrackerNode(Node):
         self._state_pub.publish(msg)
         self._publish_visible(True)
 
-    def _publish_debug(self, image, result, idx: int, mask: np.ndarray, pos_xy, vel_xy) -> None:
+    def _publish_debug(
+        self,
+        image,
+        result,
+        mask: np.ndarray,
+        pos_xy: Optional[Tuple[float, float]] = None,
+        vel_xy: Optional[Tuple[float, float]] = None,
+    ) -> None:
         draw = result.plot()
         overlay = np.zeros_like(draw)
         overlay[mask] = (0, 255, 0)
         draw = cv2.addWeighted(draw, 1.0, overlay, 0.2, 0.0)
+        if pos_xy is not None and vel_xy is not None:
+            line = f'xy=({pos_xy[0]:.2f}, {pos_xy[1]:.2f}) vel=({vel_xy[0]:.2f}, {vel_xy[1]:.2f})'
+        else:
+            line = '2D detection only (no valid depth centroid)'
         cv2.putText(
             draw,
-            f'xy=({pos_xy[0]:.2f}, {pos_xy[1]:.2f}) vel=({vel_xy[0]:.2f}, {vel_xy[1]:.2f})',
+            line,
             (20, 40),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.8,
@@ -403,12 +591,29 @@ class CubeTrackerNode(Node):
             self._history.clear()
 
     def _publish_visible(self, value: bool) -> None:
-        if value == self._last_visible:
-            return
         self._last_visible = value
         msg = Bool()
         msg.data = value
         self._visible_pub.publish(msg)
+
+    def _log_status(self, now_s: float, det: Optional[DetectionResult]) -> None:
+        if self.status_log_rate_hz <= 0.0:
+            return
+
+        period = 1.0 / self.status_log_rate_hz
+        if (now_s - self._last_status_log_time) < period:
+            return
+        self._last_status_log_time = now_s
+
+        if det is None:
+            self.get_logger().info('cube status: nothing found')
+            return
+
+        self.get_logger().info(
+            f'cube status: pos=({det.position_xy[0]:.3f}, {det.position_xy[1]:.3f}) '
+            f'vel=({det.velocity_xy[0]:.3f}, {det.velocity_xy[1]:.3f}) '
+            f'dist={det.distance_m:.3f} frame={det.frame_id}'
+        )
 
 
 def main(args=None) -> None:
@@ -419,8 +624,12 @@ def main(args=None) -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        try:
+            node.destroy_node()
+        finally:
+            # launch can already shut down the context during SIGINT; avoid double-shutdown RCLError.
+            if rclpy.ok():
+                rclpy.shutdown()
 
 
 if __name__ == '__main__':

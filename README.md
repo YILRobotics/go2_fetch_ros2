@@ -23,9 +23,91 @@ sudo dmesg -w # check port live
 ros2 launch realsense2_camera rs_launch.py pointcloud.enable:=true
 ```
 
+## Conda and ROS2 Conflicts
+
+Disable conda auto-activation to avoid conflicts with ROS2:
+
+```bash
+conda config --set auto_activate false
+conda config --set auto_activate_base false
+```
+
+When using VS Code, reload your terminal cleanly:
+
+```bash
+exec bash
+```
+
+This is cleaner than sourcing `~/.bashrc`. Verify your Python environment:
+
+```bash
+echo $PATH
+which python3  # Should output: /usr/bin/python3
+```
+
+Ensure conda is not in your `PATH`, as it interferes with ROS2.
+
+### Killing ROS2 Processes
+
+after restart motly and somehow ros2 doesnt work really in vs code terminal but normal terminal
+
+```bash
+pkill -9 -f ros2
+pkill -9 -f ros2-daemon
+pkill -9 -f _ros2_daemon
+ros2 daemon stop
+ros2 daemon start
+unset PYTHONPATH
+unset ROS_DOMAIN_ID
+unset RMW_IMPLEMENTATION
+source /opt/ros/humble/setup.bash
+which python3
+ros2 topic list
+```
+
+  pkill -f "ros2 topic echo"
+
+### Installed Packages
+
+```bash
+pip install ultralytics
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124 # Use the official PyTorch URL for CUDA 12.4
+python3 -c "import torch; print(torch.version.cuda); print(torch.cuda.is_available())"
+pip install git+https://github.com/openai/CLIP.git
+ python3 -m pip uninstall -y numpy
+```
+
+
+unset CYCLONEDDS_URI
+echo "$CYCLONEDDS_URI"   # should print empty line
+
+
+
+wget https://raw.githubusercontent.com/IntelRealSense/librealsense/master/config/99-realsense-libusb.rules
+sudo mv 99-realsense-libusb.rules /etc/udev/rules.d/
+
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+
+Unplug/replug camera.
+
+realsense-viewer
+
+
+
+sudo apt install v4l-utils
+sudo apt install ffmpeg
+ffplay /dev/video4
+
 
 Information: 
 https://forum.mybotshop.de/t/unitree-go2-openmanipulator-realsense-d435i-realsense-d405-mid360-lidar-ros-foxy/1007 
+
+
+https://techshare.co.jp/faq/unitree/unitree-go2_pc_lan.html
+
+
+https://github.com/TheoBounac/Deploy_SimToReal_RL_Go2 
 
 
 <br>

@@ -76,6 +76,20 @@ source install/setup.bash
 ros2 launch fetch fetch_bringup.launch.py
 ```
 
+RealSense + cube tracker + RViz:
+
+```bash
+ros2 launch fetch fetch_realsense_cube_tracker.launch.py
+```
+
+If your RealSense topics come up under `/camera/camera/...`, override tracker topics:
+
+```bash
+ros2 launch fetch fetch_realsense_cube_tracker.launch.py \
+  image_topic:=/camera/camera/color/image_raw \
+  pointcloud_topic:=/camera/camera/depth/color/points
+```
+
 Custom parameter file:
 
 ```bash
