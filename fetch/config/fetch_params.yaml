@@ -12,7 +12,7 @@ cube_tracker_node:
     pre_yolo_image_topic: /go2_fetch/cube_pre_yolo_image
 
     # YOLO model and label filter.
-    model_path: /home/ferdinand/unitree/go2_fetch_ros2/models/yoloe-26l-seg.pt
+    model_path: /home/ferdinand/unitree/go2_fetch_ros2/fetch/models/yoloe-26l-seg.pt
     # target_classes: [cube, box, black cube, bottle]
     target_classes: [ball]
     # Minimum confidence for a YOLO candidate.
@@ -35,9 +35,9 @@ cube_tracker_node:
 
 
     # Max sampled mask pixels used for point cloud centroiding.
-    max_mask_samples: 800
+    max_mask_samples: 500
     # Minimum valid 3D points required after filtering.
-    min_inlier_points: 30
+    min_inlier_points: 10
     # Accepted depth range in meters.
     min_depth_m: 0.1
     max_depth_m: 5.0

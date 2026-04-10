@@ -142,7 +142,7 @@ class CubeTrackerNode(Node):
         self.declare_parameter('mask_image_topic', '/go2_fetch/cube_mask_image')
         self.declare_parameter('pre_yolo_image_topic', '/go2_fetch/cube_pre_yolo_image')
 
-        self.declare_parameter('model_path', '/home/ferdinand/unitree/go2_fetch_ros2/models/yoloe-26l-seg.pt')
+        self.declare_parameter('model_path', '/home/ferdinand/unitree/go2_fetch_ros2/fetch/models/yoloe-26l-seg.pt')
         self.declare_parameter('target_classes', ['ball'])
         self.declare_parameter('conf_threshold', 0.1)
 

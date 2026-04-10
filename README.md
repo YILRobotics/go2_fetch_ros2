@@ -46,10 +46,9 @@ which python3  # Should output: /usr/bin/python3
 ```
 
 Ensure conda is not in your `PATH`, as it interferes with ROS2.
-
 ### Killing ROS2 Processes
 
-after restart motly and somehow ros2 doesnt work really in vs code terminal but normal terminal
+**Note:** After restart, ROS2 may not work properly in VS Code terminal. Try these commands in a normal terminal:
 
 ```bash
 pkill -9 -f ros2
@@ -65,49 +64,59 @@ which python3
 ros2 topic list
 ```
 
-  pkill -f "ros2 topic echo"
+Stop specific ROS2 processes:
+```bash
+pkill -f "ros2 topic echo"
+```
 
 ### Installed Packages
 
 ```bash
 pip install ultralytics
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124 # Use the official PyTorch URL for CUDA 12.4
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 python3 -c "import torch; print(torch.version.cuda); print(torch.cuda.is_available())"
 pip install git+https://github.com/openai/CLIP.git
- python3 -m pip uninstall -y numpy
+python3 -m pip uninstall -y numpy
 ```
 
+### ROS2 Environment Configuration
 
+```bash
 unset CYCLONEDDS_URI
-echo "$CYCLONEDDS_URI"   # should print empty line
+echo "$CYCLONEDDS_URI"  # should print empty line
+```
 
+### Realsense Camera Setup
 
-
+```bash
 wget https://raw.githubusercontent.com/IntelRealSense/librealsense/master/config/99-realsense-libusb.rules
 sudo mv 99-realsense-libusb.rules /etc/udev/rules.d/
-
 sudo udevadm control --reload-rules
 sudo udevadm trigger
+```
 
-Unplug/replug camera.
-
+Unplug and replug the camera, then verify:
+```bash
 realsense-viewer
+```
 
-
-
-sudo apt install v4l-utils
-sudo apt install ffmpeg
+Stream realsense with ffmpeg from terminal
+```bash
 ffplay /dev/video4
+```
 
+### Installed things 
 
-Information: 
-https://forum.mybotshop.de/t/unitree-go2-openmanipulator-realsense-d435i-realsense-d405-mid360-lidar-ros-foxy/1007 
+```bash
+sudo apt install v4l-utils 
+sudo apt install ffmpeg
+```
 
+### Information
 
-https://techshare.co.jp/faq/unitree/unitree-go2_pc_lan.html
-
-
-https://github.com/TheoBounac/Deploy_SimToReal_RL_Go2 
+* https://forum.mybotshop.de/t/unitree-go2-openmanipulator-realsense-d435i-realsense-d405-mid360-lidar-ros-foxy/1007
+* https://techshare.co.jp/faq/unitree/unitree-go2_pc_lan.html
+* https://github.com/TheoBounac/Deploy_SimToReal_RL_Go2
 
 
 <br>
