@@ -7,8 +7,11 @@ import threading
 from collections import deque
 from dataclasses import dataclass
 import os
+import shutil
+import time
 import traceback
 from typing import Optional, Tuple
+import zipfile
 
 import cv2
 import numpy as np
@@ -61,7 +64,6 @@ class CubeTrackerNode(Node):
         self.pre_yolo_image_topic = self.get_parameter('pre_yolo_image_topic').value
 
         self.model_path = (self.get_parameter('model_path').value)
-        self.target_classes = set(self.get_parameter('target_classes').value)
         self.conf_threshold = float(self.get_parameter('conf_threshold').value)
         self.max_mask_samples = int(self.get_parameter('max_mask_samples').value)
         self.min_inlier_points = int(self.get_parameter('min_inlier_points').value)
@@ -73,6 +75,8 @@ class CubeTrackerNode(Node):
         self.processing_rate_hz = float(self.get_parameter('processing_rate_hz').value)
         self.status_log_rate_hz = float(self.get_parameter('status_log_rate_hz').value)
         self.pipeline_log_rate_hz = float(self.get_parameter('pipeline_log_rate_hz').value)
+        self.enable_timing_log = bool(self.get_parameter('enable_timing_log').value)
+        self.timing_log_rate_hz = float(self.get_parameter('timing_log_rate_hz').value)
         self.enable_hsv_pre_mask = bool(self.get_parameter('enable_hsv_pre_mask').value)
         self.publish_pre_yolo_image = bool(self.get_parameter('publish_pre_yolo_image').value)
         self.hsv_green_lower = np.array(self.get_parameter('hsv_green_lower').value, dtype=np.uint8)
@@ -84,8 +88,8 @@ class CubeTrackerNode(Node):
         self.publish_mask_image = bool(self.get_parameter('publish_mask_image').value)
         self.tf_timeout_s = float(self.get_parameter('tf_timeout_s').value)
 
-        self._bridge = CvBridge()
         self._rng = np.random.default_rng(seed=1234)
+        self._bridge = CvBridge()
         self._history: deque[Tuple[float, float, float]] = deque()
 
         self._latest_pair: Optional[Tuple[Image, PointCloud2]] = None
@@ -97,7 +101,10 @@ class CubeTrackerNode(Node):
         self._last_status_log_time = 0.0
         self._last_yolo_log_time = 0.0
         self._last_pipeline_log_time = 0.0
+        self._last_timing_log_time = 0.0
         self._last_centroid_reject_reason = ''
+        self._last_process_wall_time: Optional[float] = None
+        self._current_processing_hz = 0.0
 
         self._model = self._load_model()
 
@@ -142,8 +149,7 @@ class CubeTrackerNode(Node):
         self.declare_parameter('mask_image_topic', '/go2_fetch/cube_mask_image')
         self.declare_parameter('pre_yolo_image_topic', '/go2_fetch/cube_pre_yolo_image')
 
-        self.declare_parameter('model_path', '/home/ferdinand/unitree/go2_fetch_ros2/fetch/models/yoloe-26l-seg.pt')
-        self.declare_parameter('target_classes', ['ball'])
+        self.declare_parameter('model_path', '/home/ferdinand/unitree/go2_fetch_ros2/fetch/models/yoloe-26l-seg.onnx')
         self.declare_parameter('conf_threshold', 0.1)
 
         self.declare_parameter('max_mask_samples', 2500)
@@ -155,6 +161,8 @@ class CubeTrackerNode(Node):
         self.declare_parameter('processing_rate_hz', 20.0)
         self.declare_parameter('status_log_rate_hz', 2.0)
         self.declare_parameter('pipeline_log_rate_hz', 5.0)
+        self.declare_parameter('enable_timing_log', True)
+        self.declare_parameter('timing_log_rate_hz', 5.0)
         self.declare_parameter('enable_hsv_pre_mask', False)
         self.declare_parameter('publish_pre_yolo_image', True)
         self.declare_parameter('hsv_green_lower', [35, 40, 40])
@@ -178,17 +186,44 @@ class CubeTrackerNode(Node):
         resolved_model_path = os.path.expanduser(os.path.expandvars(str(self.model_path)))
         self.model_path = resolved_model_path
         model = YOLO(resolved_model_path)
-        # if self.target_classes:
-        #     try:
-        #         model.set_classes(list(self.target_classes))
-        #     except Exception as exc:
-        #         self.get_logger().warn(
-        #             f'Failed to set YOLO text classes ({exc}). Running with model default classes.'
-        #         )
-        if self.target_classes:
-            self.get_logger().info(f"Setting YOLO classes to: {list(self.target_classes)}")
-            model.set_classes(list(self.target_classes))
         return model
+
+    def _prepare_text_embedding_asset(self) -> None:
+        asset_name = 'mobileclip2_b.ts'
+        model_dir = os.path.dirname(self.model_path)
+        model_asset = os.path.join(model_dir, asset_name)
+        home_asset = os.path.expanduser(os.path.join('~', asset_name))
+        cwd_asset = os.path.abspath(asset_name)
+
+        def is_valid_asset(path: str) -> bool:
+            return os.path.isfile(path) and zipfile.is_zipfile(path)
+
+        if not is_valid_asset(model_asset) and is_valid_asset(home_asset):
+            try:
+                os.makedirs(model_dir, exist_ok=True)
+                shutil.copy2(home_asset, model_asset)
+                self.get_logger().info(f'Copied {asset_name} to model directory: {model_asset}')
+            except OSError as exc:
+                self.get_logger().warn(f'Failed to copy {asset_name} into model directory: {exc}')
+
+        if os.path.isfile(cwd_asset) and not zipfile.is_zipfile(cwd_asset):
+            quarantined_path = f'{cwd_asset}.corrupt'
+            try:
+                os.replace(cwd_asset, quarantined_path)
+                self.get_logger().warn(
+                    f'Found corrupted {asset_name} at {cwd_asset}; moved to {quarantined_path}.'
+                )
+            except OSError as exc:
+                self.get_logger().warn(
+                    f'Found corrupted {asset_name} at {cwd_asset} but could not move it: {exc}'
+                )
+
+        try:
+            from ultralytics.utils import SETTINGS
+
+            SETTINGS['weights_dir'] = model_dir
+        except Exception as exc:
+            self.get_logger().warn(f'Failed to set ultralytics weights_dir={model_dir}: {exc}')
 
     def _sync_cb(self, image_msg: Image, cloud_msg: PointCloud2) -> None:
         with self._latest_lock:
@@ -213,6 +248,12 @@ class CubeTrackerNode(Node):
         if stamp == self._last_processed_stamp:
             self._update_visibility_from_timeout(now_s)
             return
+        now_wall = time.perf_counter()
+        if self._last_process_wall_time is not None:
+            dt = now_wall - self._last_process_wall_time
+            if dt > 1e-6:
+                self._current_processing_hz = 1.0 / dt
+        self._last_process_wall_time = now_wall
 
         self._processing = True
         try:
@@ -232,25 +273,49 @@ class CubeTrackerNode(Node):
         if self._model is None:
             return None
 
-        image = self._bridge.imgmsg_to_cv2(image_msg, desired_encoding='bgr8')
+        pipeline_start = time.perf_counter()
+        stage_start = pipeline_start
+        stage_durations_ms: list[Tuple[str, float]] = []
+
+        def mark(stage_name: str) -> None:
+            nonlocal stage_start
+            now = time.perf_counter()
+            stage_durations_ms.append((stage_name, (now - stage_start) * 1000.0))
+            stage_start = now
+
+        def log_timing(outcome: str) -> None:
+            self._maybe_log_timing(outcome, pipeline_start, stage_durations_ms)
+
+        image = self._image_msg_to_bgr8(image_msg)
+        mark('image_msg_to_bgr8')
+        if image is None:
+            log_timing('unsupported_image_encoding')
+            return None
         yolo_input = image
         if self.enable_hsv_pre_mask:
             yolo_input, color_mask = self._apply_hsv_green_blue_mask(image)
+            mark('hsv_pre_mask')
             keep_ratio = float(np.count_nonzero(color_mask)) / float(color_mask.size)
             self._maybe_log_pipeline(f'pipeline: hsv pre-mask enabled keep_ratio={keep_ratio:.3f}')
 
         if self.publish_pre_yolo_image:
             self._publish_pre_yolo_image(yolo_input, image_msg)
+            mark('publish_pre_yolo_image')
 
         yolo_out = self._model.predict(yolo_input, verbose=False, conf=self.conf_threshold)
+        mark('yolo_predict')
         if not yolo_out:
+            log_timing('no_yolo_output')
             return None
 
         result = yolo_out[0]
         self._maybe_log_yolo_detections(result)
+        mark('yolo_postprocess')
         best_idx = self._pick_best_detection(result)
+        mark('pick_best_detection')
         if best_idx is None:
-            self._maybe_log_pipeline('pipeline: no detection selected after class/conf filtering')
+            self._maybe_log_pipeline('pipeline: no detection selected after confidence filtering')
+            log_timing('no_detection_selected')
             return None
 
         boxes = result.boxes
@@ -262,22 +327,28 @@ class CubeTrackerNode(Node):
             self._maybe_log_pipeline(f'pipeline: selected detection label={label} conf={conf:.2f} idx={best_idx}')
 
         mask = self._extract_mask(result, best_idx, image.shape[:2])
+        mark('extract_mask')
         if mask is None:
             self._maybe_log_pipeline('pipeline: mask rejected (too few mask pixels)')
+            log_timing('mask_rejected')
             return None
 
         self._maybe_log_pipeline(f'pipeline: mask pixels={int(mask.sum())}')
 
         if self.publish_mask_image:
             self._publish_mask(mask, image_msg)
+            mark('publish_mask_image')
 
         if self.publish_debug_image:
             self._publish_debug(image, result, mask)
+            mark('publish_debug_image_2d')
 
         centroid = self._extract_filtered_centroid(mask, cloud_msg)
+        mark('extract_filtered_centroid')
         if centroid is None:
             reason = self._last_centroid_reject_reason or 'unknown reason'
             self._maybe_log_pipeline(f'pipeline: distance unavailable, centroid rejected ({reason})')
+            log_timing('centroid_rejected')
             return None
 
         x, y, z = centroid
@@ -299,20 +370,25 @@ class CubeTrackerNode(Node):
                 out_frame = self.target_frame
             except Exception as exc:
                 self.get_logger().warn(f'TF transform failed ({cloud_msg.header.frame_id}->{self.target_frame}): {exc}')
+            mark('tf_transform')
 
         pos_xy = (float(point.point.x), float(point.point.y))
         vel_xy = self._estimate_velocity(pos_xy)
+        mark('estimate_velocity')
 
         if self.publish_debug_image:
             self._publish_debug(image, result, mask, pos_xy, vel_xy)
+            mark('publish_debug_image_3d')
 
         distance_m = float(np.linalg.norm([point.point.x, point.point.y, point.point.z]))
+        mark('finalize')
 
         self.get_logger().info(
             f'detected: pos=({pos_xy[0]:.2f}, {pos_xy[1]:.2f}) '
             f'vel=({vel_xy[0]:.2f}, {vel_xy[1]:.2f}) '
             f'dist={distance_m:.2f}m frame={out_frame}'
         )
+        log_timing('detected')
         return DetectionResult(position_xy=pos_xy, velocity_xy=vel_xy, frame_id=out_frame, distance_m=distance_m)
 
     def _maybe_log_yolo_detections(self, result) -> None:
@@ -349,16 +425,87 @@ class CubeTrackerNode(Node):
         self._last_pipeline_log_time = now_s
         self.get_logger().info(message)
 
+    def _maybe_log_timing(
+        self,
+        outcome: str,
+        pipeline_start_s: float,
+        stage_durations_ms: list[Tuple[str, float]],
+    ) -> None:
+        if not self.enable_timing_log or self.timing_log_rate_hz <= 0.0:
+            return
+
+        now_s = self.get_clock().now().nanoseconds * 1e-9
+        period = 1.0 / self.timing_log_rate_hz
+        if (now_s - self._last_timing_log_time) < period:
+            return
+        self._last_timing_log_time = now_s
+
+        total_ms = (time.perf_counter() - pipeline_start_s) * 1000.0
+        stages = ', '.join(f'{name}={dt_ms:.1f}ms' for name, dt_ms in stage_durations_ms)
+        if stages:
+            self.get_logger().info(f'timing: outcome={outcome} total={total_ms:.1f}ms stages=[{stages}]')
+        else:
+            self.get_logger().info(f'timing: outcome={outcome} total={total_ms:.1f}ms')
+        self.get_logger().info(
+            f'current_hz: {self._current_processing_hz:.2f} (target={self.processing_rate_hz:.2f})'
+        )
+
     def _publish_mask(self, mask: np.ndarray, image_msg: Image) -> None:
         mask_u8 = (mask.astype(np.uint8) * 255)
-        mask_msg = self._bridge.cv2_to_imgmsg(mask_u8, encoding='mono8')
-        mask_msg.header = image_msg.header
-        self._mask_pub.publish(mask_msg)
+        self._publish_numpy_image(mask_u8, encoding='mono8', header=image_msg.header, publisher=self._mask_pub)
 
     def _publish_pre_yolo_image(self, image: np.ndarray, image_msg: Image) -> None:
-        msg = self._bridge.cv2_to_imgmsg(image, encoding='bgr8')
-        msg.header = image_msg.header
-        self._pre_yolo_pub.publish(msg)
+        self._publish_numpy_image(image, encoding='bgr8', header=image_msg.header, publisher=self._pre_yolo_pub)
+
+    def _image_msg_to_bgr8(self, image_msg: Image) -> Optional[np.ndarray]:
+        encoding = str(image_msg.encoding).lower()
+        if encoding not in ('bgr8', 'rgb8'):
+            self.get_logger().warn(f'Unsupported image encoding: {image_msg.encoding}')
+            return None
+
+        height = int(image_msg.height)
+        width = int(image_msg.width)
+        if height <= 0 or width <= 0:
+            self.get_logger().warn(
+                f'Invalid image shape from message: width={image_msg.width}, height={image_msg.height}'
+            )
+            return None
+
+        expected_row_bytes = width * 3
+        step = int(image_msg.step)
+        if step < expected_row_bytes:
+            self.get_logger().warn(f'Invalid image step {step} for width={width} encoding={image_msg.encoding}')
+            return None
+
+        buffer = np.frombuffer(image_msg.data, dtype=np.uint8)
+        expected_total_bytes = step * height
+        if buffer.size < expected_total_bytes:
+            self.get_logger().warn(
+                f'Image payload too small: got={buffer.size} expected_at_least={expected_total_bytes}'
+            )
+            return None
+
+        array = buffer[:expected_total_bytes].reshape((height, step))
+        image = array[:, :expected_row_bytes].reshape((height, width, 3))
+        if encoding == 'rgb8':
+            return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        return image.copy()
+
+    def _publish_numpy_image(self, image: np.ndarray, encoding: str, header, publisher) -> None:
+        if encoding == 'mono8':
+            if image.ndim != 2:
+                raise ValueError(f'mono8 expects 2D image, got shape={image.shape}')
+            out = np.ascontiguousarray(image, dtype=np.uint8)
+        elif encoding == 'bgr8':
+            if image.ndim != 3 or image.shape[2] != 3:
+                raise ValueError(f'bgr8 expects HxWx3 image, got shape={image.shape}')
+            out = np.ascontiguousarray(image, dtype=np.uint8)
+        else:
+            raise ValueError(f'Unsupported publish encoding: {encoding}')
+
+        msg = self._bridge.cv2_to_imgmsg(out, encoding=encoding)
+        msg.header = header
+        publisher.publish(msg)
 
     def _apply_hsv_green_blue_mask(self, image: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
@@ -373,17 +520,11 @@ class CubeTrackerNode(Node):
         if boxes is None or len(boxes) == 0:
             return None
 
-        names = result.names if hasattr(result, 'names') else {}
         best_idx = None
         best_score = -1.0
 
         for i in range(len(boxes)):
-            cls_id = int(boxes.cls[i].item())
             conf = float(boxes.conf[i].item())
-            label = names.get(cls_id, str(cls_id)) if isinstance(names, dict) else str(cls_id)
-
-            if self.target_classes and label not in self.target_classes:
-                continue
 
             xyxy = boxes.xyxy[i].detach().cpu().numpy()
             area = max(1.0, float((xyxy[2] - xyxy[0]) * (xyxy[3] - xyxy[1])))
@@ -395,7 +536,7 @@ class CubeTrackerNode(Node):
         if best_idx is not None:
             return best_idx
 
-        # Fallback: highest confidence detection when no class match.
+        # Fallback: highest confidence detection.
         confidences = boxes.conf.detach().cpu().numpy()
         return int(np.argmax(confidences)) if confidences.size > 0 else None
 
@@ -578,9 +719,9 @@ class CubeTrackerNode(Node):
             2,
             cv2.LINE_AA,
         )
-        debug_msg = self._bridge.cv2_to_imgmsg(draw, encoding='bgr8')
+        debug_msg = Image()
         debug_msg.header.stamp = self.get_clock().now().to_msg()
-        self._debug_pub.publish(debug_msg)
+        self._publish_numpy_image(draw, encoding='bgr8', header=debug_msg.header, publisher=self._debug_pub)
 
     def _update_visibility_from_timeout(self, now_s: float) -> None:
         visible = False

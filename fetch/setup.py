@@ -27,6 +27,7 @@ setup(
             'cube_tracker_node = fetch.cube_tracker_node:main',
             'policy_node = fetch.policy_node:main',
             'state_machine_node = fetch.state_machine_node:main',
+            'dummy_image_pointcloud_publisher_node = fetch.dummy_image_pointcloud_publisher_node:main',
         ],
     },
 )

@@ -110,6 +110,11 @@ ffplay /dev/video4
 ```bash
 sudo apt install v4l-utils 
 sudo apt install ffmpeg
+/usr/bin/python3 -m pip install --user pyrealsense2
+
+pip install --user onnx>=1.12.0,<2.0.0
+pip install --user onnxruntime-gpu
+pip install --user onnxslim
 ```
 
 ### Information

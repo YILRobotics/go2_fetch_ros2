@@ -4,8 +4,9 @@ import os
 
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 from launch import LaunchDescription
-from launch.conditions import IfCondition
-from launch.substitutions import PythonExpression
+from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition, UnlessCondition
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
@@ -25,6 +26,7 @@ def generate_launch_description() -> LaunchDescription:
     params_file = default_params
     image_topic = '/camera/color/image_raw'
     pointcloud_topic = '/camera/depth/color/points'
+    use_dummy_publisher = 'false'
     use_rviz = 'true'
     rviz_config = default_rviz_config
     camera_namespace = ''
@@ -56,6 +58,25 @@ def generate_launch_description() -> LaunchDescription:
             'enable_infra1': False,
             'enable_infra2': False,
         }],
+        condition=UnlessCondition(use_dummy_publisher),
+    )
+
+    dummy_realsense_publisher = Node(
+        package='fetch',
+        executable='dummy_image_pointcloud_publisher_node',
+        name='dummy_image_pointcloud_publisher_node',
+        output='screen',
+        emulate_tty=True,
+        parameters=[{
+            'image_path': os.path.join(fetch_share, '..', 'data', 'realsense_color.png'),
+            'pointcloud_npy_path': os.path.join(fetch_share, '..', 'data', 'realsense_points.npy'),
+            'image_topic': image_topic,
+            'pointcloud_topic': pointcloud_topic,
+            'frame_id': 'camera_color_optical_frame',
+            'publish_rate_hz': 30.0,
+            'max_points': 500000,
+        }],
+        condition=IfCondition(use_dummy_publisher),
     )
 
     cube_tracker = Node(
@@ -77,7 +98,7 @@ def generate_launch_description() -> LaunchDescription:
         package='rviz2',
         executable='rviz2',
         name='rviz2',
-        output='screen',
+        output='log',
         arguments=['-d', rviz_config],
         condition=IfCondition(
             PythonExpression([
@@ -93,6 +114,7 @@ def generate_launch_description() -> LaunchDescription:
 
     return LaunchDescription([
         realsense,
+        dummy_realsense_publisher,
         cube_tracker,
         rviz_with_config,
     ])
