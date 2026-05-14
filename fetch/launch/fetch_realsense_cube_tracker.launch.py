@@ -68,8 +68,8 @@ def generate_launch_description() -> LaunchDescription:
         output='screen',
         emulate_tty=True,
         parameters=[{
-            'image_path': os.path.join(fetch_share, '..', 'data', 'realsense_color.png'),
-            'pointcloud_npy_path': os.path.join(fetch_share, '..', 'data', 'realsense_points.npy'),
+            'image_path': os.path.join(fetch_share, '..', 'data', 'realsense_color_cube.png'),
+            'pointcloud_npy_path': os.path.join(fetch_share, '..', 'data', 'realsense_points_cube.npy'),
             'image_topic': image_topic,
             'pointcloud_topic': pointcloud_topic,
             'frame_id': 'camera_color_optical_frame',
@@ -113,7 +113,7 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     return LaunchDescription([
-        realsense,
+        # realsense,
         dummy_realsense_publisher,
         cube_tracker,
         rviz_with_config,

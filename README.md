@@ -11,6 +11,16 @@ ROS2 packages for the Unitree Go2 robot fetch project. Running a RL policy to pu
 ssh unitree@192.168.123.18 # password 123, then choose (1) ROS2 foxy
 ```
 
+### Final working command AND RECOMENDED TO ADD TO YOUR `.bashrc` FILE on the PC:
+
+```bash
+source /opt/ros/humble/setup.bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export ROS_DOMAIN_ID=0
+export ROS_LOCALHOST_ONLY=0
+export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="eno2" priority="default" multicast="default" /></Interfaces></General></Domain></CycloneDDS>'
+```
+
 ## Realsense Camera connect to PC
 
 ```bash
@@ -46,11 +56,10 @@ which python3  # Should output: /usr/bin/python3
 ```
 
 Ensure conda is not in your `PATH`, as it interferes with ROS2.
-### Killing ROS2 Processes
-
-**Note:** After restart, ROS2 may not work properly in VS Code terminal. Try these commands in a normal terminal:
+### Killing ROS2 Processes (Not really neccesary)
 
 ```bash
+cd ~/unitree
 pkill -9 -f ros2
 pkill -9 -f ros2-daemon
 pkill -9 -f _ros2_daemon
@@ -62,6 +71,7 @@ unset RMW_IMPLEMENTATION
 source /opt/ros/humble/setup.bash
 which python3
 ros2 topic list
+source install/setup.bash
 ```
 
 Stop specific ROS2 processes:

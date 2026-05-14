@@ -53,3 +53,5 @@ CATKIN_IGNORE
 .codex
 
 models/
+
+.vscode/

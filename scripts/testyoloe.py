@@ -6,7 +6,7 @@ import time
 cap = cv2.VideoCapture(4) # 4 is colour of realsense d435i, 0 is depth of realsense d435i
 
 # model = YOLO("yolov8m-world.pt")
-model = YOLO("~/unitree/go2_fetch_ros2/models/yoloe-26l-seg.pt")
+model = YOLO("/home/ferdinand/unitree/go2_fetch_ros2/fetch/models/yoloe-26l-seg.pt")
 # model = YOLO("yolov8l-worldv2.pt")
 # model.set_classes(["black box", "box", "cube", "black cube"])
 # model.set_classes(["tube", "cylinder", "can", "bottle"])
