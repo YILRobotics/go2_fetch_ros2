@@ -9,7 +9,7 @@ from typing import Optional, Sequence, Tuple
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import TwistStamped
+from geometry_msgs.msg import Twist, TwistStamped
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray, String
@@ -27,6 +27,37 @@ def _resolve_policy_path(path_raw: str) -> Path:
         if exported_candidate.is_file():
             return exported_candidate
     return path
+
+
+def _resolve_torch_device(device_name: str) -> str:
+    normalized = str(device_name).strip().lower()
+    if normalized == 'gpu':
+        return 'cuda'
+    return normalized
+
+
+def _initialize_go2_lowcmd(cmd) -> None:
+    if hasattr(cmd, 'head') and len(cmd.head) >= 2:
+        cmd.head[0] = 0xFE
+        cmd.head[1] = 0xEF
+    if hasattr(cmd, 'level_flag'):
+        cmd.level_flag = 0xFF
+    if hasattr(cmd, 'gpio'):
+        cmd.gpio = 0
+
+    for motor_cmd in getattr(cmd, 'motor_cmd', []):
+        if hasattr(motor_cmd, 'mode'):
+            motor_cmd.mode = 0x0A
+        if hasattr(motor_cmd, 'q'):
+            motor_cmd.q = 2.146e9
+        if hasattr(motor_cmd, 'dq'):
+            motor_cmd.dq = 16000.0
+        if hasattr(motor_cmd, 'kp'):
+            motor_cmd.kp = 0.0
+        if hasattr(motor_cmd, 'kd'):
+            motor_cmd.kd = 0.0
+        if hasattr(motor_cmd, 'tau'):
+            motor_cmd.tau = 0.0
 
 
 def _safe_normalize_quat_wxyz(q_wxyz: np.ndarray) -> np.ndarray:
@@ -78,6 +109,12 @@ class PolicyNode(Node):
         self.lowcmd_topic = self.get_parameter('lowcmd_topic').value
         self.robot_odom_topic = self.get_parameter('robot_odom_topic').value
         self.cube_state_topic = self.get_parameter('cube_state_topic').value
+        self.cmd_vel_topic = self.get_parameter('cmd_vel_topic').value
+        self.policy_stack = self.get_parameter('policy_stack').value.strip().lower()
+        self.mode = self.get_parameter('initial_mode').value.strip().lower()
+        self.cmd_vel_timeout_s = float(self.get_parameter('cmd_vel_timeout_s').value)
+        self.require_lowstate = bool(self.get_parameter('require_lowstate').value)
+        self.lowstate_timeout_s = float(self.get_parameter('lowstate_timeout_s').value)
 
         self.control_rate_hz = float(self.get_parameter('control_rate_hz').value)
         self.high_level_rate_hz = float(self.get_parameter('high_level_rate_hz').value)
@@ -101,29 +138,42 @@ class PolicyNode(Node):
         self.default_joint_angles = np.array(self.get_parameter('default_joint_angles').value, dtype=np.float32)
         self.policy_to_motor = np.array(self.get_parameter('policy_to_motor_map').value, dtype=np.int32)
 
-        self.device_name = self.get_parameter('torch_device').value
+        self.device_name = _resolve_torch_device(self.get_parameter('torch_device').value)
         self.device = torch.device(self.device_name)
+
+        self.ang_vel_scale = float(self.get_parameter('ang_vel_scale').value)
+        self.dof_pos_scale = float(self.get_parameter('dof_pos_scale').value)
+        self.dof_vel_scale = float(self.get_parameter('dof_vel_scale').value)
+        self.cmd_scale = np.array(self.get_parameter('cmd_scale').value, dtype=np.float32)
+        self.max_cmd = np.array(self.get_parameter('max_cmd').value, dtype=np.float32)
+        self.foot_force_scale = float(self.get_parameter('foot_force_scale').value)
+        self.low_level_num_obs = int(self.get_parameter('low_level_num_obs').value)
 
         high_level_path = _resolve_policy_path(self.get_parameter('high_level_policy_path').value)
         low_level_path = _resolve_policy_path(self.get_parameter('low_level_policy_path').value)
-        self._high_level_policy = self._load_torchscript(high_level_path, 'high-level')
+        self._high_level_policy = None
+        if self._uses_high_level_policy():
+            self._high_level_policy = self._load_torchscript(high_level_path, 'high-level')
         self._low_level_policy = self._load_torchscript(low_level_path, 'low-level')
 
-        self.mode = 'standup'
         self._mode_start_time = self.get_clock().now().nanoseconds * 1e-9
         self._standup_start_policy_joints: Optional[np.ndarray] = None
 
         self._last_high_level_time = -1.0
         self._last_high_action = np.zeros(3, dtype=np.float32)
         self._last_low_action = np.zeros(12, dtype=np.float32)
+        self._cmd_vel_action = np.zeros(3, dtype=np.float32)
+        self._last_cmd_vel_time: Optional[float] = None
+        self._last_lowstate_time: Optional[float] = None
 
         self._motor_q = np.zeros(12, dtype=np.float32)
         self._motor_dq = np.zeros(12, dtype=np.float32)
+        self._foot_force = np.zeros(4, dtype=np.float32)
         self._imu_gyro = np.zeros(3, dtype=np.float32)
         self._imu_quat_wxyz = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
 
         self._robot_pos_xy = np.zeros(2, dtype=np.float32)
-        self._robot_vel_xy = np.zeros(2, dtype=np.float32)
+        self._robot_vel_xyz = np.zeros(3, dtype=np.float32)
         self._robot_odom_quat_xyzw = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
 
         self._cube_pos_xy = np.zeros(2, dtype=np.float32)
@@ -138,6 +188,7 @@ class PolicyNode(Node):
         self._command_pub = self.create_publisher(TwistStamped, 'go2_fetch/policy_cmd', 10)
 
         self.create_subscription(String, self.mode_topic, self._mode_cb, 10)
+        self.create_subscription(Twist, self.cmd_vel_topic, self._cmd_vel_cb, 10)
         self.create_subscription(Odometry, self.robot_odom_topic, self._robot_odom_cb, 20)
         self.create_subscription(Odometry, self.cube_state_topic, self._cube_state_cb, 20)
 
@@ -150,7 +201,8 @@ class PolicyNode(Node):
 
         self._control_timer = self.create_timer(1.0 / self.control_rate_hz, self._control_step)
         self.get_logger().info(
-            f'Policy node ready. high={high_level_path} low={low_level_path} mode_topic={self.mode_topic}'
+            f'Policy node ready. stack={self.policy_stack} high={high_level_path} low={low_level_path} '
+            f'mode={self.mode} mode_topic={self.mode_topic} cmd_vel_topic={self.cmd_vel_topic}'
         )
 
     def _declare_parameters(self) -> None:
@@ -159,6 +211,12 @@ class PolicyNode(Node):
         self.declare_parameter('lowcmd_topic', '/lowcmd')
         self.declare_parameter('robot_odom_topic', '/lio_sam_ros2/mapping/odometry')
         self.declare_parameter('cube_state_topic', '/go2_fetch/cube_state')
+        self.declare_parameter('cmd_vel_topic', '/cmd_vel')
+        self.declare_parameter('policy_stack', 'low_and_high_level')
+        self.declare_parameter('initial_mode', 'standup')
+        self.declare_parameter('cmd_vel_timeout_s', 0.5)
+        self.declare_parameter('require_lowstate', True)
+        self.declare_parameter('lowstate_timeout_s', 0.25)
 
         self.declare_parameter('control_rate_hz', 50.0)
         self.declare_parameter('high_level_rate_hz', 15.0)
@@ -169,6 +227,13 @@ class PolicyNode(Node):
         self.declare_parameter('kp', 40.0)
         self.declare_parameter('kd', 0.5)
         self.declare_parameter('tau_ff', 0.0)
+        self.declare_parameter('ang_vel_scale', 1.0)
+        self.declare_parameter('dof_pos_scale', 1.0)
+        self.declare_parameter('dof_vel_scale', 0.05)
+        self.declare_parameter('cmd_scale', [0.8, 0.8, 1.0])
+        self.declare_parameter('max_cmd', [1.0, 1.0, 1.0])
+        self.declare_parameter('foot_force_scale', 0.01)
+        self.declare_parameter('low_level_num_obs', 45)
 
         self.declare_parameter('goal_xy', [0.0, 0.0])
         self.declare_parameter('goal_radius', 0.2)
@@ -207,6 +272,9 @@ class PolicyNode(Node):
             self._lowcmd_pub = None
             self.get_logger().warn(f'Could not import unitree_go interfaces: {exc}')
 
+    def _uses_high_level_policy(self) -> bool:
+        return self.policy_stack in ('low_and_high_level', 'high_and_low', 'hierarchical')
+
     def _mode_cb(self, msg: String) -> None:
         new_mode = msg.data.strip().lower()
         if new_mode == self.mode:
@@ -217,12 +285,21 @@ class PolicyNode(Node):
         self._standup_start_policy_joints = None
         self.get_logger().info(f'Mode switched to: {self.mode}')
 
+    def _cmd_vel_cb(self, msg: Twist) -> None:
+        self._cmd_vel_action[:] = [
+            float(np.clip(msg.linear.x, -self.max_lin_x, self.max_lin_x)),
+            float(np.clip(msg.linear.y, -self.max_lin_y, self.max_lin_y)),
+            float(np.clip(msg.angular.z, -self.max_yaw, self.max_yaw)),
+        ]
+        self._last_cmd_vel_time = self.get_clock().now().nanoseconds * 1e-9
+
     def _robot_odom_cb(self, msg: Odometry) -> None:
         self._robot_pos_xy[0] = float(msg.pose.pose.position.x)
         self._robot_pos_xy[1] = float(msg.pose.pose.position.y)
 
-        self._robot_vel_xy[0] = float(msg.twist.twist.linear.x)
-        self._robot_vel_xy[1] = float(msg.twist.twist.linear.y)
+        self._robot_vel_xyz[0] = float(msg.twist.twist.linear.x)
+        self._robot_vel_xyz[1] = float(msg.twist.twist.linear.y)
+        self._robot_vel_xyz[2] = float(msg.twist.twist.linear.z)
 
         self._robot_odom_quat_xyzw[:] = [
             float(msg.pose.pose.orientation.x),
@@ -240,10 +317,15 @@ class PolicyNode(Node):
 
     def _lowstate_cb(self, msg) -> None:
         try:
+            self._last_lowstate_time = self.get_clock().now().nanoseconds * 1e-9
             motor_state = msg.motor_state
             for i in range(min(12, len(motor_state))):
                 self._motor_q[i] = float(motor_state[i].q)
                 self._motor_dq[i] = float(motor_state[i].dq)
+
+            if hasattr(msg, 'foot_force'):
+                for i in range(min(4, len(msg.foot_force))):
+                    self._foot_force[i] = float(msg.foot_force[i])
 
             imu = msg.imu_state
             self._imu_gyro[:] = [float(imu.gyroscope[0]), float(imu.gyroscope[1]), float(imu.gyroscope[2])]
@@ -259,6 +341,13 @@ class PolicyNode(Node):
     def _control_step(self) -> None:
         now_s = self.get_clock().now().nanoseconds * 1e-9
 
+        if self.require_lowstate and not self._has_fresh_lowstate(now_s):
+            self.get_logger().warn(
+                'Waiting for fresh LowState before sending motor targets.',
+                throttle_duration_sec=2.0,
+            )
+            return
+
         if self.mode == 'standup':
             target_policy_joints = self._standup_targets(now_s)
             self._publish_motor_targets(target_policy_joints)
@@ -267,7 +356,10 @@ class PolicyNode(Node):
         if self.mode == 'search':
             high_action = np.array([0.0, 0.0, self.search_spin_rate], dtype=np.float32)
         elif self.mode == 'policy':
-            high_action = self._run_high_level_policy(now_s)
+            if self._uses_high_level_policy():
+                high_action = self._run_high_level_policy(now_s)
+            else:
+                high_action = self._get_cmd_vel_action(now_s)
         else:
             target_policy_joints = self.default_joint_angles.copy()
             self._publish_motor_targets(target_policy_joints)
@@ -277,6 +369,11 @@ class PolicyNode(Node):
         target_policy_joints = low_action * self.action_scale + self.default_joint_angles
         self._publish_motor_targets(target_policy_joints)
         self._publish_debug_command(high_action)
+
+    def _has_fresh_lowstate(self, now_s: float) -> bool:
+        if self._last_lowstate_time is None:
+            return False
+        return now_s - self._last_lowstate_time <= self.lowstate_timeout_s
 
     def _standup_targets(self, now_s: float) -> np.ndarray:
         current_policy_joints = self._motor_q[self.policy_to_motor]
@@ -288,6 +385,9 @@ class PolicyNode(Node):
         return (1.0 - alpha) * self._standup_start_policy_joints + alpha * self.default_joint_angles
 
     def _run_high_level_policy(self, now_s: float) -> np.ndarray:
+        if self._high_level_policy is None:
+            raise RuntimeError('High-level policy requested, but policy_stack is not configured for it.')
+
         update_period = 1.0 / max(self.high_level_rate_hz, 1e-3)
         if now_s - self._last_high_level_time < update_period:
             return self._last_high_action.copy()
@@ -305,6 +405,13 @@ class PolicyNode(Node):
         self._last_high_action = action
         self._last_high_level_time = now_s
         return action.copy()
+
+    def _get_cmd_vel_action(self, now_s: float) -> np.ndarray:
+        if self._last_cmd_vel_time is None:
+            return np.zeros(3, dtype=np.float32)
+        if now_s - self._last_cmd_vel_time > self.cmd_vel_timeout_s:
+            return np.zeros(3, dtype=np.float32)
+        return self._cmd_vel_action.copy()
 
     def _run_low_level_policy(self, high_cmd: np.ndarray) -> np.ndarray:
         low_obs = self._build_low_level_obs(high_cmd)
@@ -344,7 +451,7 @@ class PolicyNode(Node):
             joint_vel_policy * 0.05,
             self._last_high_action,
             self._robot_pos_xy,
-            self._robot_vel_xy,
+            self._robot_vel_xyz[:2],
             self._cube_pos_xy,
             self._cube_vel_xy,
             self.goal_xy,
@@ -361,15 +468,21 @@ class PolicyNode(Node):
         joint_vel_policy = self._motor_dq[self.policy_to_motor]
 
         obs_parts = [
-            self._imu_gyro * 0.2,
+            self._imu_gyro * self.ang_vel_scale,
             _projected_gravity_body_from_wxyz(self._imu_quat_wxyz),
-            high_cmd,
-            joint_pos_policy - self.default_joint_angles,
-            joint_vel_policy * 0.05,
+            np.asarray(high_cmd, dtype=np.float32),
+            (joint_pos_policy - self.default_joint_angles) * self.dof_pos_scale,
+            joint_vel_policy * self.dof_vel_scale,
             self._last_low_action,
         ]
 
-        return np.concatenate(obs_parts, axis=0).astype(np.float32)
+        obs = np.concatenate(obs_parts, axis=0).astype(np.float32)
+        if obs.size != self.low_level_num_obs:
+            self.get_logger().warn(
+                f'Low-level observation has {obs.size} values, expected {self.low_level_num_obs}.',
+                throttle_duration_sec=2.0,
+            )
+        return obs
 
     def _publish_motor_targets(self, target_policy_joints: np.ndarray) -> None:
         target_policy_joints = np.asarray(target_policy_joints, dtype=np.float32)
@@ -389,6 +502,7 @@ class PolicyNode(Node):
             self.get_logger().error('LowCmd message does not contain motor_cmd field.')
             return
 
+        _initialize_go2_lowcmd(cmd)
         n_motors = min(12, len(cmd.motor_cmd))
         for i in range(n_motors):
             m = cmd.motor_cmd[i]

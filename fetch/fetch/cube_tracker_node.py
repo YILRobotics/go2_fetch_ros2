@@ -26,6 +26,7 @@ from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import Image, PointCloud2
 from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Bool
+from visualization_msgs.msg import Marker
 import tf2_ros
 
 try:
@@ -42,6 +43,7 @@ except ImportError:
 @dataclass
 class DetectionResult:
     position_xy: Tuple[float, float]
+    position_xyz: Tuple[float, float, float]
     velocity_xy: Tuple[float, float]
     frame_id: str
     distance_m: float
@@ -59,6 +61,7 @@ class CubeTrackerNode(Node):
         self.pointcloud_topic = self.get_parameter('pointcloud_topic').value
         self.cube_state_topic = self.get_parameter('cube_state_topic').value
         self.cube_visible_topic = self.get_parameter('cube_visible_topic').value
+        self.cube_marker_topic = self.get_parameter('cube_marker_topic').value
         self.debug_image_topic = self.get_parameter('debug_image_topic').value
         self.mask_image_topic = self.get_parameter('mask_image_topic').value
         self.pre_yolo_image_topic = self.get_parameter('pre_yolo_image_topic').value
@@ -72,6 +75,12 @@ class CubeTrackerNode(Node):
         self.outlier_mad_scale = float(self.get_parameter('outlier_mad_scale').value)
         self.detection_timeout_s = float(self.get_parameter('detection_timeout_s').value)
         self.velocity_window_s = float(self.get_parameter('velocity_window_s').value)
+        self.cube_state_low_pass_cutoff_hz = float(
+            self.get_parameter('cube_state_low_pass_cutoff_hz').value
+        )
+        self.cube_dimensions = tuple(float(v) for v in self.get_parameter('cube_dimensions').value)
+        if len(self.cube_dimensions) != 3 or any(v <= 0.0 for v in self.cube_dimensions):
+            raise ValueError('cube_dimensions must contain three positive values [x, y, z]')
         self.processing_rate_hz = float(self.get_parameter('processing_rate_hz').value)
         self.status_log_rate_hz = float(self.get_parameter('status_log_rate_hz').value)
         self.pipeline_log_rate_hz = float(self.get_parameter('pipeline_log_rate_hz').value)
@@ -97,6 +106,9 @@ class CubeTrackerNode(Node):
         self._last_processed_stamp: Optional[Tuple[int, int]] = None
         self._last_detection_time: Optional[float] = None
         self._last_visible = False
+        self._last_marker_frame_id = ''
+        self._filtered_cube_position: Optional[np.ndarray] = None
+        self._last_filter_time_s: Optional[float] = None
         self._processing = False
         self._last_status_log_time = 0.0
         self._last_yolo_log_time = 0.0
@@ -110,6 +122,7 @@ class CubeTrackerNode(Node):
 
         self._state_pub = self.create_publisher(Odometry, self.cube_state_topic, 10)
         self._visible_pub = self.create_publisher(Bool, self.cube_visible_topic, 10)
+        self._marker_pub = self.create_publisher(Marker, self.cube_marker_topic, 10)
         self._debug_pub = self.create_publisher(Image, self.debug_image_topic, 2)
         self._mask_pub = self.create_publisher(Image, self.mask_image_topic, 2)
         self._pre_yolo_pub = self.create_publisher(Image, self.pre_yolo_image_topic, 2)
@@ -145,6 +158,7 @@ class CubeTrackerNode(Node):
         self.declare_parameter('pointcloud_topic', '/camera/depth/color/points')
         self.declare_parameter('cube_state_topic', '/go2_fetch/cube_state')
         self.declare_parameter('cube_visible_topic', '/go2_fetch/cube_visible')
+        self.declare_parameter('cube_marker_topic', '/go2_fetch/cube_marker')
         self.declare_parameter('debug_image_topic', '/go2_fetch/cube_debug_image')
         self.declare_parameter('mask_image_topic', '/go2_fetch/cube_mask_image')
         self.declare_parameter('pre_yolo_image_topic', '/go2_fetch/cube_pre_yolo_image')
@@ -171,6 +185,8 @@ class CubeTrackerNode(Node):
         self.declare_parameter('hsv_blue_upper', [135, 255, 255])
         self.declare_parameter('detection_timeout_s', 0.35)
         self.declare_parameter('velocity_window_s', 0.6)
+        self.declare_parameter('cube_state_low_pass_cutoff_hz', 10.0)
+        self.declare_parameter('cube_dimensions', [0.16, 0.16, 0.16])
 
         self.declare_parameter('target_frame', 'base_link')
         self.declare_parameter('tf_timeout_s', 0.05)
@@ -372,7 +388,9 @@ class CubeTrackerNode(Node):
                 self.get_logger().warn(f'TF transform failed ({cloud_msg.header.frame_id}->{self.target_frame}): {exc}')
             mark('tf_transform')
 
-        pos_xy = (float(point.point.x), float(point.point.y))
+        raw_pos_xyz = (float(point.point.x), float(point.point.y), float(point.point.z))
+        pos_xyz = self._low_pass_cube_position(raw_pos_xyz)
+        pos_xy = pos_xyz[:2]
         vel_xy = self._estimate_velocity(pos_xy)
         mark('estimate_velocity')
 
@@ -389,7 +407,13 @@ class CubeTrackerNode(Node):
             f'dist={distance_m:.2f}m frame={out_frame}'
         )
         log_timing('detected')
-        return DetectionResult(position_xy=pos_xy, velocity_xy=vel_xy, frame_id=out_frame, distance_m=distance_m)
+        return DetectionResult(
+            position_xy=pos_xy,
+            position_xyz=pos_xyz,
+            velocity_xy=vel_xy,
+            frame_id=out_frame,
+            distance_m=distance_m,
+        )
 
     def _maybe_log_yolo_detections(self, result) -> None:
         now_s = self.get_clock().now().nanoseconds * 1e-9
@@ -578,6 +602,20 @@ class CubeTrackerNode(Node):
             self._last_centroid_reject_reason = f'invalid cloud dimensions width={width} height={height}'
             return None
 
+        mask_height, mask_width = mask.shape
+        if height == 1 and mask_height > 1:
+            self._last_centroid_reject_reason = (
+                f'point cloud is unordered ({width}x{height}); enable pointcloud.ordered_pc '
+                'to map image pixels to 3D points'
+            )
+            return None
+
+        # RealSense depth decimation changes the organized cloud resolution. Map
+        # mask pixel centers into that lower-resolution grid before reading XYZ.
+        if width != mask_width or height != mask_height:
+            xs = np.floor((xs.astype(np.float64) + 0.5) * width / mask_width).astype(np.int64)
+            ys = np.floor((ys.astype(np.float64) + 0.5) * height / mask_height).astype(np.int64)
+
         valid = np.logical_and.reduce((
             xs >= 0,
             ys >= 0,
@@ -592,6 +630,7 @@ class CubeTrackerNode(Node):
 
         # ROS 2 Humble read_points_numpy() indexes by flattened point indices.
         flat_indices = ys.astype(np.int64) * width + xs.astype(np.int64)
+        flat_indices = np.unique(flat_indices)
         points = point_cloud2.read_points_numpy(
             cloud_msg,
             field_names=['x', 'y', 'z'],
@@ -650,6 +689,30 @@ class CubeTrackerNode(Node):
 
         return np.mean(points, axis=0)
 
+    def _low_pass_cube_position(
+        self,
+        position_xyz: Tuple[float, float, float],
+        now_s: Optional[float] = None,
+    ) -> Tuple[float, float, float]:
+        sample = np.asarray(position_xyz, dtype=np.float64)
+        if now_s is None:
+            now_s = self.get_clock().now().nanoseconds * 1e-9
+
+        if (
+            self.cube_state_low_pass_cutoff_hz <= 0.0
+            or self._filtered_cube_position is None
+            or self._last_filter_time_s is None
+        ):
+            filtered = sample
+        else:
+            dt = max(0.0, now_s - self._last_filter_time_s)
+            alpha = 1.0 - np.exp(-2.0 * np.pi * self.cube_state_low_pass_cutoff_hz * dt)
+            filtered = self._filtered_cube_position + alpha * (sample - self._filtered_cube_position)
+
+        self._filtered_cube_position = filtered
+        self._last_filter_time_s = now_s
+        return (float(filtered[0]), float(filtered[1]), float(filtered[2]))
+
     def _estimate_velocity(self, pos_xy: Tuple[float, float]) -> Tuple[float, float]:
         now_s = self.get_clock().now().nanoseconds * 1e-9
         self._history.append((now_s, pos_xy[0], pos_xy[1]))
@@ -691,7 +754,44 @@ class CubeTrackerNode(Node):
         msg.twist.covariance[7] = 0.04
 
         self._state_pub.publish(msg)
+        self._publish_cube_marker(det, stamp)
         self._publish_visible(True)
+
+    def _publish_cube_marker(self, det: DetectionResult, stamp: Tuple[int, int]) -> None:
+        marker = Marker()
+        marker.header.stamp.sec = stamp[0]
+        marker.header.stamp.nanosec = stamp[1]
+        marker.header.frame_id = det.frame_id
+        marker.ns = 'cube_state'
+        marker.id = 0
+        marker.type = Marker.CUBE
+        marker.action = Marker.ADD
+        marker.pose.position.x = det.position_xyz[0]
+        marker.pose.position.y = det.position_xyz[1]
+        marker.pose.position.z = det.position_xyz[2]
+        marker.pose.orientation.w = 1.0
+        marker.scale.x = self.cube_dimensions[0]
+        marker.scale.y = self.cube_dimensions[1]
+        marker.scale.z = self.cube_dimensions[2]
+        marker.color.r = 1.0
+        marker.color.g = 1.0
+        marker.color.b = 0.0
+        marker.color.a = 0.6
+        self._marker_pub.publish(marker)
+        self._last_marker_frame_id = det.frame_id
+
+    def _delete_cube_marker(self) -> None:
+        if not self._last_marker_frame_id:
+            return
+
+        marker = Marker()
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.header.frame_id = self._last_marker_frame_id
+        marker.ns = 'cube_state'
+        marker.id = 0
+        marker.action = Marker.DELETE
+        self._marker_pub.publish(marker)
+        self._last_marker_frame_id = ''
 
     def _publish_debug(
         self,
@@ -727,9 +827,14 @@ class CubeTrackerNode(Node):
         visible = False
         if self._last_detection_time is not None:
             visible = (now_s - self._last_detection_time) <= self.detection_timeout_s
+        was_visible = self._last_visible
         self._publish_visible(visible)
+        if was_visible and not visible:
+            self._delete_cube_marker()
         if not visible:
             self._history.clear()
+            self._filtered_cube_position = None
+            self._last_filter_time_s = None
 
     def _publish_visible(self, value: bool) -> None:
         self._last_visible = value

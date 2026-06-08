@@ -28,6 +28,9 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+import os
+
+from ament_index_python import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution
@@ -65,7 +68,7 @@ def generate_launch_description():
     declared_arguments.append(
         DeclareLaunchArgument(
             'use_sim_time',
-            default_value='True',
+            default_value='False',
             description='Use simulation/Gazebo clock if true',
         )
     )
@@ -88,6 +91,9 @@ def generate_launch_description():
     robot_description_param = launch_ros.descriptions.ParameterValue(robot_description_content,
                                                                      value_type=str)
 
+
+    rviz_config = os.path.join(get_package_share_directory('fetch'), 'rviz', 'realsense.rviz')
+    
     nodes.append(Node(
         package='robot_state_publisher',
         executable='robot_state_publisher',
@@ -99,7 +105,17 @@ def generate_launch_description():
             'publish_frequency': 100.0,
             'frame_prefix': '',
             }],
-        )
+        ),
+    )
+
+    nodes.append(Node(
+        package='rviz2',
+        executable='rviz2',
+        name='rviz2',
+        output='log',
+        arguments=['-d', rviz_config],
+        ),
+        
     )
 
     return LaunchDescription(declared_arguments + nodes)

@@ -5,6 +5,7 @@ Panels:
     Property Tree Widget:
       Expanded:
         - /Global Options1
+        - /RobotModel2
       Splitter Ratio: 0.5
     Tree Height: 269
   - Class: rviz_common/Selection
@@ -56,6 +57,64 @@ Visualization Manager:
       Frame Timeout: 15
       Frames:
         All Enabled: true
+        FL_calf:
+          Value: true
+        FL_calf_rotor:
+          Value: true
+        FL_foot:
+          Value: true
+        FL_hip:
+          Value: true
+        FL_hip_rotor:
+          Value: true
+        FL_thigh:
+          Value: true
+        FL_thigh_rotor:
+          Value: true
+        FR_calf:
+          Value: true
+        FR_calf_rotor:
+          Value: true
+        FR_foot:
+          Value: true
+        FR_hip:
+          Value: true
+        FR_hip_rotor:
+          Value: true
+        FR_thigh:
+          Value: true
+        FR_thigh_rotor:
+          Value: true
+        RL_calf:
+          Value: true
+        RL_calf_rotor:
+          Value: true
+        RL_foot:
+          Value: true
+        RL_hip:
+          Value: true
+        RL_hip_rotor:
+          Value: true
+        RL_thigh:
+          Value: true
+        RL_thigh_rotor:
+          Value: true
+        RR_calf:
+          Value: true
+        RR_calf_rotor:
+          Value: true
+        RR_foot:
+          Value: true
+        RR_hip:
+          Value: true
+        RR_hip_rotor:
+          Value: true
+        RR_thigh:
+          Value: true
+        RR_thigh_rotor:
+          Value: true
+        base:
+          Value: true
         camera_color_frame:
           Value: true
         camera_color_optical_frame:
@@ -66,19 +125,75 @@ Visualization Manager:
           Value: true
         camera_link:
           Value: true
-      Marker Scale: 0.10000000149011612
+        imu:
+          Value: true
+        odom:
+          Value: true
+        radar:
+          Value: true
+      Marker Scale: 0.20000000298023224
       Name: TF
       Show Arrows: true
       Show Axes: true
-      Show Names: false
+      Show Names: true
       Tree:
-        camera_link:
-          camera_color_frame:
-            camera_color_optical_frame:
+        odom:
+          base:
+            FL_hip:
+              FL_thigh:
+                FL_calf:
+                  FL_foot:
+                    {}
+                FL_calf_rotor:
+                  {}
+              FL_thigh_rotor:
+                {}
+            FL_hip_rotor:
               {}
-          camera_depth_frame:
-            camera_depth_optical_frame:
+            FR_hip:
+              FR_thigh:
+                FR_calf:
+                  FR_foot:
+                    {}
+                FR_calf_rotor:
+                  {}
+              FR_thigh_rotor:
+                {}
+            FR_hip_rotor:
               {}
+            RL_hip:
+              RL_thigh:
+                RL_calf:
+                  RL_foot:
+                    {}
+                RL_calf_rotor:
+                  {}
+              RL_thigh_rotor:
+                {}
+            RL_hip_rotor:
+              {}
+            RR_hip:
+              RR_thigh:
+                RR_calf:
+                  RR_foot:
+                    {}
+                RR_calf_rotor:
+                  {}
+              RR_thigh_rotor:
+                {}
+            RR_hip_rotor:
+              {}
+            imu:
+              {}
+            radar:
+              {}
+          camera_link:
+            camera_color_frame:
+              camera_color_optical_frame:
+                {}
+            camera_depth_frame:
+              camera_depth_optical_frame:
+                {}
       Update Interval: 0
       Value: true
     - Alpha: 1
@@ -92,7 +207,7 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /robot_description
-      Enabled: true
+      Enabled: false
       Links:
         All Links Enabled: true
         Expand Joint Details: false
@@ -105,7 +220,7 @@ Visualization Manager:
       Name: RobotModel
       TF Prefix: ""
       Update Interval: 0
-      Value: true
+      Value: false
       Visual Enabled: true
     - Alpha: 1
       Autocompute Intensity Bounds: true
@@ -262,19 +377,19 @@ Visualization Manager:
           Scale: 1
           Value: true
         Value: true
-      Enabled: true
-      Keep: 100
-      Name: Odometry
+      Enabled: false
+      Keep: 1
+      Name: Cube Pose
       Position Tolerance: 0.10000000149011612
       Shape:
         Alpha: 1
         Axes Length: 1
         Axes Radius: 0.10000000149011612
-        Color: 255; 25; 0
-        Head Length: 0.30000001192092896
-        Head Radius: 0.10000000149011612
-        Shaft Length: 1
-        Shaft Radius: 0.05000000074505806
+        Color: 255; 255; 0
+        Head Length: 0.019999999552965164
+        Head Radius: 0.019999999552965164
+        Shaft Length: 0.019999999552965164
+        Shaft Radius: 0.004999999888241291
         Value: Arrow
       Topic:
         Depth: 5
@@ -283,11 +398,191 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /go2_fetch/cube_state
+      Value: false
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Name: Cube Marker
+      Namespaces:
+        {}
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /go2_fetch/cube_marker
       Value: true
+    - Alpha: 0.5
+      Class: rviz_default_plugins/RobotModel
+      Collision Enabled: false
+      Description File: ""
+      Description Source: Topic
+      Description Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot_description
+      Enabled: true
+      Links:
+        All Links Enabled: true
+        Expand Joint Details: false
+        Expand Link Details: false
+        Expand Tree: false
+        FL_calf:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        FL_calf_rotor:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        FL_foot:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        FL_hip:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        FL_hip_rotor:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        FL_thigh:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        FL_thigh_rotor:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        FR_calf:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        FR_calf_rotor:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        FR_foot:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        FR_hip:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        FR_hip_rotor:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        FR_thigh:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        FR_thigh_rotor:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        Link Tree Style: Links in Alphabetic Order
+        RL_calf:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        RL_calf_rotor:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        RL_foot:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        RL_hip:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        RL_hip_rotor:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        RL_thigh:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        RL_thigh_rotor:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        RR_calf:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        RR_calf_rotor:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        RR_foot:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        RR_hip:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        RR_hip_rotor:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        RR_thigh:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        RR_thigh_rotor:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        base:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        imu:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        radar:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+      Mass Properties:
+        Inertia: false
+        Mass: false
+      Name: RobotModel
+      TF Prefix: ""
+      Update Interval: 0
+      Value: true
+      Visual Enabled: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
-    Fixed Frame: camera_link
+    Fixed Frame: FL_hip_rotor
     Frame Rate: 30
   Name: root
   Tools:
@@ -330,25 +625,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 0.6868308782577515
+      Distance: 0.9193271994590759
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.003972531761974096
-        Y: -0.05282938480377197
-        Z: 0.17037267982959747
+        X: -0.0829988569021225
+        Y: -0.04213874787092209
+        Z: 0.049476444721221924
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.49020129442214966
+      Pitch: 0.7652013301849365
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 3.1517016887664795
+      Yaw: 2.1367034912109375
     Saved: ~
 Window Geometry:
   Cube Detection Debug:
@@ -376,5 +671,5 @@ Window Geometry:
   Views:
     collapsed: false
   Width: 1513
-  X: 857
-  Y: 50
+  X: 194
+  Y: 42

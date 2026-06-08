@@ -65,6 +65,7 @@ class StateMachineNode(Node):
         else:
             self._last_invisible_time_s = now_s
 
+    # Loop function
     def _tick(self) -> None:
         now_s = self.get_clock().now().nanoseconds * 1e-9
 

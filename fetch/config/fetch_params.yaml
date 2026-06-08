@@ -7,13 +7,14 @@ cube_tracker_node:
     # Output topics from the tracker.
     cube_state_topic: /go2_fetch/cube_state
     cube_visible_topic: /go2_fetch/cube_visible
+    cube_marker_topic: /go2_fetch/cube_marker
     debug_image_topic: /go2_fetch/cube_debug_image
     mask_image_topic: /go2_fetch/cube_mask_image
     pre_yolo_image_topic: /go2_fetch/cube_pre_yolo_image
 
     # YOLO model path.
-    # model_path: /home/ferdinand/unitree/go2_fetch_ros2/fetch/models/yoloe-26l-seg.pt
-    model_path: /home/ferdinand/unitree/go2_fetch_ros2/fetch/models/yoloe-26l-seg_ball_round_object_sphere_round.onnx
+    model_path: /home/ferdinand/unitree/src/go2_fetch_ros2/fetch/models/yoloe-26l-seg_box.onnx
+    # model_path: /home/ferdinand/unitree/go2_fetch_ros2/fetch/models/yoloe-26l-seg_ball_round_object_sphere_round.onnx
     # Minimum confidence for a YOLO candidate.
     conf_threshold: 0.1
 
@@ -23,7 +24,7 @@ cube_tracker_node:
     pipeline_log_rate_hz: 5.0
 
     # Optional HSV pre-mask before YOLO (keeps green/blue regions only).
-    enable_hsv_pre_mask: true
+    enable_hsv_pre_mask: false
     # Publish the exact image sent to YOLO after optional HSV masking.
     publish_pre_yolo_image: true
     # HSV bounds for green and blue masks: [H, S, V] in OpenCV ranges.
@@ -43,12 +44,16 @@ cube_tracker_node:
     # Outlier rejection aggressiveness (median absolute deviation scale).
     outlier_mad_scale: 3.0
     # How long detection stays visible after last valid 3D update.
-    detection_timeout_s: 0.35
+    detection_timeout_s: 0.5
     # Time window used for velocity fitting.
     velocity_window_s: 0.6
+    # First-order low-pass cutoff for published cube XYZ state; <= 0 disables it.
+    cube_state_low_pass_cutoff_hz: 4.0
+    # Physical RViz marker dimensions [x, y, z] in meters.
+    cube_dimensions: [0.16, 0.16, 0.16]
 
     # Target frame for published state and TF lookup timeout.
-    target_frame: base_link
+    target_frame: camera_link
     tf_timeout_s: 0.05
 
     # Visualization outputs.
@@ -63,6 +68,13 @@ policy_node:
     lowcmd_topic: /lowcmd
     robot_odom_topic: /lio_sam_ros2/mapping/odometry
     cube_state_topic: /go2_fetch/cube_state
+    cmd_vel_topic: /cmd_vel
+    # low_level uses cmd_vel directly. low_and_high_level uses the cube high-level policy.
+    policy_stack: low_level
+    initial_mode: standup
+    cmd_vel_timeout_s: 0.5
+    require_lowstate: true
+    lowstate_timeout_s: 0.25
 
     # Control loop rates.
     control_rate_hz: 50.0
@@ -77,14 +89,21 @@ policy_node:
 
     # Low-level action scaling and motor gains.
     action_scale: 0.25
-    kp: 40.0
+    kp: 25.0
     kd: 0.5
     tau_ff: 0.0
+    ang_vel_scale: 0.2
+    dof_pos_scale: 1.0
+    dof_vel_scale: 0.05
+    cmd_scale: [0.8, 0.8, 1.0]
+    max_cmd: [1.0, 1.0, 1.0]
+    foot_force_scale: 0.01
+    low_level_num_obs: 45
 
     # Motion command limits.
     max_lin_x: 0.5
-    max_lin_y: 0.5
-    max_yaw: 0.25
+    max_lin_y: 0.4
+    max_yaw: 1.0
 
     # Goal and foot-target geometry.
     goal_xy: [0.0, 0.0]

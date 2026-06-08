@@ -23,7 +23,7 @@ import isaaclab_tasks.manager_based.navigation.mdp as nav_mdp
 from unitree_rl_lab.assets.unitree import UNITREE_GO2_CFG as ROBOT_CFG
 from unitree_rl_lab.tasks import mdp
 
-from .. import push_mdp
+from .....go2_fetch_ros2.scripts import push_mdp
 from .velocity_4l_env_cfg import RobotEnvCfg as LowLevel4LEnvCfg
 
 SIM_DT = 0.005

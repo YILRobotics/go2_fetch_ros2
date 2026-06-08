@@ -8,7 +8,56 @@ ROS2 packages for the Unitree Go2 robot fetch project. Running a RL policy to pu
 ## Connect to Unitree with SSH
 
 ```bash
-ssh unitree@192.168.123.18 # password 123, then choose (1) ROS2 foxy
+ssh unitree@192.168.123.18 # password 123
+```
+
+run ros2 on computer
+```bash
+export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="lo" priority="default" multicast="default" /></Interfaces></General></Domain></CycloneDDS>'
+```
+
+make robot move:
+
+ros2 topic pub /api/sport/request unitree_api/msg/Request "{header: {identity: {api_id: 1008}}, parameter: '{\"x\": 0.0, \"y\": 0.0, \"z\": 0.5}'}" -r 10
+
+
+
+stand down 
+
+ros2 topic pub --once /api/sport/request unitree_api/msg/Request \
+"{header: {identity: {api_id: 1005}}, parameter: ''}"
+
+
+\\
+
+
+ros2 launch fetch policy_test.launch.py
+ros2 topic pub --once /go2_fetch/mode std_msgs/msg/String "{data: policy}"
+
+ros2 topic pub /cmd_vel geometry_msgs/msg/Twist \
+"{linear: {x: 0.03, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" -r 10
+
+
+
+\\\\\\
+
+start realsense camera
+
+```bash
+ros2 run realsense2_camera realsense2_camera_node \
+  --ros-args \
+  -r __ns:=/realsense \
+  -p enable_color:=true \
+  -p enable_depth:=true \
+  -p pointcloud.enable:=true \
+  -p pointcloud.stream_filter:=2 \
+  -p pointcloud.stream_index_filter:=0 \
+  -p align_depth.enable:=true \
+  -p decimation_filter.enable:=true \
+  -p decimation_filter.filter_magnitude:=4 \
+  -p spatial_filter.enable:=true \
+  -p temporal_filter.enable:=true \
+  -p enable_sync:=true
 ```
 
 ### Final working command AND RECOMENDED TO ADD TO YOUR `.bashrc` FILE on the PC:
