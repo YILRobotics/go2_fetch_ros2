@@ -38,8 +38,63 @@ ros2 topic pub /cmd_vel geometry_msgs/msg/Twist \
 "{linear: {x: 0.03, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" -r 10
 
 
+## Make conda env for deploying RL policy with ROS2
 
-\\\\\\
+```bash
+python3 --version # Check systems python version (here Python 3.10.12)
+conda create -n env_deploy python=3.10.12
+conda activate env_deploy
+```
+
+```bash
+pip install --upgrade pip
+```
+
+Install a CUDA-enabled PyTorch 2.7.0 build for CUDA 12.8 (here CUDA 13.0 but still 12.8 is still ok):
+```bash
+pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
+```
+
+Install extra stuff and stuff that is required
+```bash
+pip install --no-cache-dir \
+  matplotlib==3.8.4 \
+  scipy==1.15.3 \
+  PyYAML==6.0.1 \
+  psutil \
+  requests \
+  colorama \
+  typeguard \
+  importlib-metadata \
+  pytz
+```
+
+`Unitree_sdk2py` is a Python library that enables direct communication with Unitree robots.
+It plays a crucial role in this project, allowing the system to collect sensor data from the robot and send velocity and motor commands in real time.
+
+Clone the repository using Git :
+```bash
+cd ~/unitree
+git clone https://github.com/unitreerobotics/unitree_sdk2_python.git
+cd unitree_sdk2_python
+pip install -e .
+```
+
+Install things for go2_odometry
+```bash
+pip install "empy==3.3.4" "catkin-pkg==1.1.0" "lark==1.1.1" colcon-common-extensions
+
+conda install -c conda-forge pinocchio -y
+```
+
+
+**If you are inside a Conda env, pre-load the system libstdc++** or `rclpy` may complain about `GLIBCXX`. When you run ROS 2 Python nodes from a **Conda environment**, Conda provides its own `libstdc++.so.6`. ROS 2 Humble’s wheels (`rclpy`, others) were built against the **system** libstdc++ (newer GLIBCXX symbols). It is necessary to tell the dynamic loader to **prefer the system runtime**, preventing the `GLIBCXX_*` family of errors. It’s the cleanest fix when you want Conda + ROS 2 to coexist.
+So, make sure to always pre-load the system libstdc++ (or add it to the `.bashrc` file):
+```bash
+export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
+```
+
+## Realsense Camera
 
 start realsense camera
 

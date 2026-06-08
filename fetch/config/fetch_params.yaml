@@ -14,7 +14,7 @@ cube_tracker_node:
 
     # YOLO model path.
     model_path: /home/ferdinand/unitree/src/go2_fetch_ros2/fetch/models/yoloe-26l-seg_box.onnx
-    # model_path: /home/ferdinand/unitree/go2_fetch_ros2/fetch/models/yoloe-26l-seg_ball_round_object_sphere_round.onnx
+    # model_path: /weak_motorhome/ferdinand/unitree/go2_fetch_ros2/fetch/models/yoloe-26l-seg_ball_round_object_sphere_round.onnx
     # Minimum confidence for a YOLO candidate.
     conf_threshold: 0.1
 
@@ -62,57 +62,62 @@ cube_tracker_node:
 
 policy_node:
   ros__parameters:
-    # IO topics.
-    mode_topic: /go2_fetch/mode
-    lowstate_topic: /lowstate
-    lowcmd_topic: /lowcmd
-    robot_odom_topic: /lio_sam_ros2/mapping/odometry
-    cube_state_topic: /go2_fetch/cube_state
-    cmd_vel_topic: /cmd_vel
-    # low_level uses cmd_vel directly. low_and_high_level uses the cube high-level policy.
-    policy_stack: low_level
-    initial_mode: standup
-    cmd_vel_timeout_s: 0.5
-    require_lowstate: true
-    lowstate_timeout_s: 0.25
+    # DDS / Unitree SDK setup. Set network_interface to the robot NIC, for example eth0.
+    network_interface: ""
+    dds_domain_id: 0
+    project_root: /home/ferdinand/unitree/Deploy_SimToReal_RL_Go2
+    unitree_sdk_paths: []
 
-    # Control loop rates.
-    control_rate_hz: 50.0
-    high_level_rate_hz: 15.0
-    standup_duration_s: 3.0
-    search_spin_rate: 0.30
+    # When true, generate random observations, skip DDS setup, and never send commands.
+    fake_observations_mode: true
+    # Independent output gate. Fake observation mode always overrides this to false.
+    send_commands: false
+    fake_observation_seed: 0
+    fake_observation_min: -1.0
+    fake_observation_max: 1.0
+    fake_log_every_n_steps: 100
+    
+    # Runtime behavior copied from deploy_real_isaaclab.py.
+    start_policy_on_startup: true
+    auto_switch_to_low_level: true
+    wait_for_start_button: true
+    wait_for_a_button: true
+    plot_on_exit: false
+    analysis_pdf_path: analyse_robot.pdf
+    model_loop_period_s: 0.025
+    startup_sleep_s: 0.001
 
-    # Policy checkpoints and runtime backend.
-    high_level_policy_path: /home/ferdinand/fetchrobot/ferdinand/go2_fetch_rl/logs/rsl_rl/unitree_go2_pushcube_4l/2026-04-05_21-11-33_test_77/model_2399.pt
-    low_level_policy_path: /home/ferdinand/fetchrobot/ferdinand/go2_fetch_rl/logs/rsl_rl/unitree_go2_velocity_4l/2026-04-05_12-01-56_walk_2/exported/policy.pt
-    torch_device: gpu
+    # ROS bridge topics used by the Kalman/inekf helper.
+    kalman_odom_topic: /odometry/filtered
+    inekf_lowstate_topic: /inekf_lowstate
+    lowstate_publish_period_s: 0.005
 
-    # Low-level action scaling and motor gains.
-    action_scale: 0.25
-    kp: 25.0
-    kd: 0.5
-    tau_ff: 0.0
-    ang_vel_scale: 0.2
+    # Original deploy_real/configs/go2.yaml values.
+    msg_type: go
+    imu_type: pelvis
+    lowcmd_topic: rt/lowcmd
+    lowstate_topic: rt/lowstate
+    sportstate_topic: rt/sportmodestate
+    policy_path: policy_rough.pt
+    policy_base_dir: /home/ferdinand/unitree/Deploy_SimToReal_RL_Go2/pre_train
+    leg_joint2motor_idx: [3, 0, 9, 6, 4, 1, 10, 7, 5, 2, 11, 8]
+    default_angles: [-0.1, 0.8, -1.5, 0.1, 0.8, -1.5, -0.1, 1.0, -1.5, 0.1, 1.0, -1.5]
+    kps: [25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0]
+    kds: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
+    weak_motor: []
+    arm_waist_joint2motor_idx: []
+    arm_waist_kps: []
+    arm_waist_kds: []
+    arm_waist_target: []
+    control_dt: 0.005
+    ang_vel_scale: 0.25
     dof_pos_scale: 1.0
     dof_vel_scale: 0.05
+    action_scale: 0.25
     cmd_scale: [0.8, 0.8, 1.0]
+    num_actions: 12
+    num_obs: 52
     max_cmd: [1.0, 1.0, 1.0]
-    foot_force_scale: 0.01
-    low_level_num_obs: 45
-
-    # Motion command limits.
-    max_lin_x: 0.5
-    max_lin_y: 0.4
-    max_yaw: 1.0
-
-    # Goal and foot-target geometry.
-    goal_xy: [0.0, 0.0]
-    goal_radius: 0.2
-    lf_foot_xy_offset: [0.22, 0.10]
-
-    # Joint defaults and policy-to-motor index mapping.
-    default_joint_angles: [0.1, -0.1, 0.1, -0.1, 0.8, 0.8, 1.0, 1.0, -1.5, -1.5, -1.5, -1.5]
-    policy_to_motor_map: [3, 0, 9, 6, 4, 1, 10, 7, 5, 2, 11, 8]
 
 state_machine_node:
   ros__parameters:
