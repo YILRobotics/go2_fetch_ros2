@@ -18,25 +18,25 @@ export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterfac
 
 make robot move:
 
+```bash
 ros2 topic pub /api/sport/request unitree_api/msg/Request "{header: {identity: {api_id: 1008}}, parameter: '{\"x\": 0.0, \"y\": 0.0, \"z\": 0.5}'}" -r 10
-
+```
 
 
 stand down 
-
+```bash
 ros2 topic pub --once /api/sport/request unitree_api/msg/Request \
 "{header: {identity: {api_id: 1005}}, parameter: ''}"
+```
 
-
-\\
-
-
+others
+```bash
 ros2 launch fetch policy_test.launch.py
 ros2 topic pub --once /go2_fetch/mode std_msgs/msg/String "{data: policy}"
 
 ros2 topic pub /cmd_vel geometry_msgs/msg/Twist \
 "{linear: {x: 0.03, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" -r 10
-
+```bash
 
 ## Make conda env for deploying RL policy with ROS2
 
@@ -92,6 +92,11 @@ conda install -c conda-forge pinocchio -y
 So, make sure to always pre-load the system libstdc++ (or add it to the `.bashrc` file):
 ```bash
 export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
+```
+
+maybe also because ros doesnt use python from library:   
+```bash
+export PYTHONPATH="$(python -c 'import site; print(site.getsitepackages()[0])'):$PYTHONPATH"
 ```
 
 ## Realsense Camera

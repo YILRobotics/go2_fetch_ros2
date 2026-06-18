@@ -56,20 +56,15 @@ Important fields:
 - Unitree DDS setup (`network_interface`, `dds_domain_id`)
 - Unitree topics (`lowstate_topic`, `lowcmd_topic`, `sportstate_topic`)
 - safe policy test mode (`fake_observations_mode`, `send_commands`)
+- runtime velocity-command source (`use_high_level_policy`)
 - startup controls (`wait_for_start_button`, `wait_for_a_button`)
 - tracker thresholds (confidence, depth range, outlier filtering)
 - FSM timeouts (`cube_lost_timeout_s`, `cube_reacquire_hold_s`)
 
 ## PushCube-4L Policy Interface
 
-The current `policy_node.py` is a ROS 2 port of `Deploy_SimToReal_RL_Go2/deploy_real`.
-It matches the older direct deployment policy style:
-
-```text
-52 observations -> 12 joint actions
-```
-
-That is different from the `Unitree-Go2-PushCube-4L` task in:
+The current `policy_node.py` implements the hierarchical `Unitree-Go2-PushCube-4L`
+policy stack from:
 
 ```text
 /home/ferdinand/fetchrobot/ferdinand/go2_fetch_rl
@@ -179,7 +174,7 @@ That usually gives about 187 height values, so the full observation for a 12-joi
 3 + 3 + 3 + 3 + 12 + 12 + 12 + 187 = 235 values
 ```
 
-The generic IsaacLab velocity action is also different from the current ROS node:
+The generic IsaacLab velocity action is also different from the PushCube ROS node:
 
 ```text
 target_joint = action * 0.5 + default_joint_position
@@ -194,37 +189,22 @@ target_joint = action * 0.25 + default_joint_position
 
 ### Current Node Interface
 
-The current `policy_node.py` builds a 52-value observation:
+The node now loads both TorchScript policies, builds the 48-value high-level
+observation at 15 Hz, and passes its 3-value output into the 45-value low-level
+observation at 50 Hz. The 12 low-level actions become joint position targets
+using scale `0.25`, the exported default offsets, `Kp=25`, and `Kd=0.5`.
 
-```text
-0:4    foot forces
-4:7    base linear velocity
-7:10   IMU angular velocity
-10:13  projected gravity
-13:16  joystick command
-16:28  joint positions relative to default
-28:40  joint velocities
-40:52  previous action
-```
+Robot and cube positions, cube-to-goal, and foot-to-cube must use the same world
+frame. The default tracker target frame is therefore `odom`; `goal_xy` must also
+be configured in that frame.
 
-It then sends 12 joint actions directly to the robot.
+#### Cube And Foot Observations
 
-This means the current node is not compatible with the PushCube-4L high-level or low-level policies.
-
-### What Needs To Change For PushCube-4L
-
-To run the PushCube-4L policy stack on the real robot, `policy_node.py` should be changed to:
-
-1. Load two TorchScript policies:
-   - high-level PushCube policy
-   - low-level 4L velocity policy
-2. Build the 48-value high-level observation.
-3. Run the high-level policy at about 15 Hz.
-4. Use the 3-value high-level output as the low-level velocity command.
-5. Build the 45-value low-level observation.
-6. Run the low-level policy at about 50 Hz.
-7. Convert the 12 low-level actions into joint position targets.
-8. Send those joint targets to the robot.
+- Fake mode uses random observations and does not require cube or foot TF data.
+- Real mode reads the left-front-foot position from the `odom -> FL_foot` TF.
+- Real mode stops deployment if the required transform is unavailable.
+- `policy_world_frame`, `lf_foot_frame`, and `lf_foot_tf_timeout_s` configure the lookup.
+- No approximate left-front-foot offset is used.
 
 The real robot deployment needs these signals:
 
@@ -287,6 +267,46 @@ Run random fake observations without connecting to DDS or sending robot commands
 ros2 launch fetch policy_test.launch.py \
   fake_observations_mode:=true
 ```
+
+## Runtime Commands
+
+Publish a Unitree Sport API request at 10 Hz:
+
+```bash
+ros2 topic pub /api/sport/request unitree_api/msg/Request \
+  "{header: {identity: {api_id: 1008}}, parameter: '{\"x\": 0.0, \"y\": 0.0, \"z\": 0.5}'}" \
+  -r 10
+```
+
+The low-level policy command source is controlled by
+`use_high_level_policy`:
+
+```text
+true   48-value PushCube policy generates [vx, vy, wz]
+false  Unitree joystick generates [vx, vy, wz]
+```
+
+Read the current mode:
+
+```bash
+ros2 param get /policy_node use_high_level_policy
+```
+
+Disable the high-level policy and use the joystick immediately:
+
+```bash
+ros2 param set /policy_node use_high_level_policy false
+```
+
+Re-enable the high-level PushCube policy immediately:
+
+```bash
+ros2 param set /policy_node use_high_level_policy true
+```
+
+This parameter can be changed while the node is running. It is separate from
+`fake_observations_mode`, which switches the entire node to random observations,
+skips DDS and TF setup, and disables robot command output.
 
 ## Notes
 

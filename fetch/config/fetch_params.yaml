@@ -53,7 +53,8 @@ cube_tracker_node:
     cube_dimensions: [0.16, 0.16, 0.16]
 
     # Target frame for published state and TF lookup timeout.
-    target_frame: camera_link
+    # PushCube high-level observations require cube and robot positions in one world frame.
+    target_frame: odom
     tf_timeout_s: 0.05
 
     # Visualization outputs.
@@ -63,15 +64,17 @@ cube_tracker_node:
 policy_node:
   ros__parameters:
     # DDS / Unitree SDK setup. Set network_interface to the robot NIC, for example eth0.
-    network_interface: ""
+    network_interface: "eno2"
     dds_domain_id: 0
-    project_root: /home/ferdinand/unitree/Deploy_SimToReal_RL_Go2
-    unitree_sdk_paths: []
+    # project_root: /home/ferdinand/unitree/Deploy_SimToReal_RL_Go2
+    # unitree_sdk_paths: []
 
     # When true, generate random observations, skip DDS setup, and never send commands.
     fake_observations_mode: true
     # Independent output gate. Fake observation mode always overrides this to false.
     send_commands: false
+    # Runtime-switchable command source: PushCube policy when true, joystick when false.
+    use_high_level_policy: true
     fake_observation_seed: 0
     fake_observation_min: -1.0
     fake_observation_max: 1.0
@@ -84,11 +87,22 @@ policy_node:
     wait_for_a_button: true
     plot_on_exit: false
     analysis_pdf_path: analyse_robot.pdf
-    model_loop_period_s: 0.025
+    # PushCube-4L low-level policy runs at 50 Hz; high-level runs at 15 Hz.
+    model_loop_period_s: 0.02
+    high_level_rate_hz: 15.0
     startup_sleep_s: 0.001
 
     # ROS bridge topics used by the Kalman/inekf helper.
     kalman_odom_topic: /odometry/filtered
+    cube_state_topic: /go2_fetch/cube_state
+    goal_xy: [0.0, 0.0]
+    goal_radius: 0.2
+    # Real-mode high-level observations obtain the left-front-foot position from TF.
+    policy_world_frame: odom
+    lf_foot_frame: FL_foot
+    lf_foot_tf_timeout_s: 0.02
+    # nav_msgs/Odometry twist is normally expressed in child_frame_id.
+    robot_twist_in_body_frame: true
     inekf_lowstate_topic: /inekf_lowstate
     lowstate_publish_period_s: 0.005
 
@@ -98,25 +112,29 @@ policy_node:
     lowcmd_topic: rt/lowcmd
     lowstate_topic: rt/lowstate
     sportstate_topic: rt/sportmodestate
-    policy_path: policy_rough.pt
-    policy_base_dir: /home/ferdinand/unitree/Deploy_SimToReal_RL_Go2/pre_train
+    policy_path: ""
+    policy_base_dir: /home/ferdinand/fetchrobot/ferdinand/go2_fetch_rl
+    high_level_policy_path: logs/rsl_rl/unitree_go2_pushcube_4l/2026-05-15_02-52-05_cam_6/exported/policy.pt
+    low_level_policy_path: logs/rsl_rl/unitree_go2_velocity_4l/2026-04-05_12-01-56_walk_2/exported/policy.pt
     leg_joint2motor_idx: [3, 0, 9, 6, 4, 1, 10, 7, 5, 2, 11, 8]
     default_angles: [-0.1, 0.8, -1.5, 0.1, 0.8, -1.5, -0.1, 1.0, -1.5, 0.1, 1.0, -1.5]
     kps: [25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0]
-    kds: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
+    kds: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
     weak_motor: []
     arm_waist_joint2motor_idx: []
     arm_waist_kps: []
     arm_waist_kds: []
     arm_waist_target: []
     control_dt: 0.005
-    ang_vel_scale: 0.25
+    ang_vel_scale: 0.2
     dof_pos_scale: 1.0
     dof_vel_scale: 0.05
     action_scale: 0.25
     cmd_scale: [0.8, 0.8, 1.0]
     num_actions: 12
-    num_obs: 52
+    high_level_num_obs: 48
+    low_level_num_obs: 45
+    num_obs: 45
     max_cmd: [1.0, 1.0, 1.0]
 
 state_machine_node:

@@ -3,24 +3,27 @@
 
 from __future__ import annotations
 
+import math
 import threading
 import time
-from math import pi
 from pathlib import Path
 
 import numpy as np
 import rclpy
 import torch
 from nav_msgs.msg import Odometry
+from rcl_interfaces.msg import SetParametersResult
+from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.parameter import Parameter
+from rclpy.time import Time
+import tf2_ros
 
 from fetch.deploy_real_utils import (
     DeployRealConfig,
     KeyMap,
     RemoteController,
     add_unitree_sdk_paths,
-    compute_velocity,
     copy_low_state_dds_to_ros,
     create_zero_cmd,
     get_gravity_orientation,
@@ -34,13 +37,13 @@ class RealPolicyNode(Node):
         super().__init__("policy_node")
         self._declare_parameters()
         self.config = self._config_from_parameters()
-        self.project_root = Path(self.get_parameter("project_root").value).expanduser()
-        sdk_paths = self._array_parameter(
-            "unitree_sdk_paths",
-            Parameter.Type.STRING_ARRAY,
-        )
-        sdk_paths.insert(0, str(self.project_root))
-        add_unitree_sdk_paths(sdk_paths)
+        # self.project_root = Path(self.get_parameter("project_root").value).expanduser()
+        # sdk_paths = self._array_parameter(
+        #     "unitree_sdk_paths",
+        #     Parameter.Type.STRING_ARRAY,
+        # )
+        # sdk_paths.insert(0, str(self.project_root))
+        # add_unitree_sdk_paths(sdk_paths)
 
         self.remote_controller = RemoteController()
         self.base_lin_vel_input = [0, 0, 0, 0]
@@ -48,6 +51,10 @@ class RealPolicyNode(Node):
         self._stop_event = threading.Event()
         self._worker_thread = None
         self.fake_observations_mode = bool(self.get_parameter("fake_observations_mode").value)
+        self.use_high_level_policy = bool(
+            self.get_parameter("use_high_level_policy").value
+        )
+        self.add_on_set_parameters_callback(self._parameter_callback)
         self.commands_enabled = (
             bool(self.get_parameter("send_commands").value)
             and not self.fake_observations_mode
@@ -85,14 +92,15 @@ class RealPolicyNode(Node):
     def _declare_parameters(self) -> None:
         self.declare_parameter("network_interface", "")
         self.declare_parameter("dds_domain_id", 0)
-        self.declare_parameter("project_root", "/home/ferdinand/unitree/Deploy_SimToReal_RL_Go2")
-        self.declare_parameter(
-            "unitree_sdk_paths",
-            Parameter.Type.STRING_ARRAY,
-        )
+        # self.declare_parameter("project_root", "/home/ferdinand/unitree/Deploy_SimToReal_RL_Go2")
+        # self.declare_parameter(
+        #     "unitree_sdk_paths",
+        #     Parameter.Type.STRING_ARRAY,
+        # )
         self.declare_parameter("start_policy_on_startup", True)
         self.declare_parameter("fake_observations_mode", True)
         self.declare_parameter("send_commands", False)
+        self.declare_parameter("use_high_level_policy", True)
         self.declare_parameter("fake_observation_seed", 0)
         self.declare_parameter("fake_observation_min", -1.0)
         self.declare_parameter("fake_observation_max", 1.0)
@@ -103,9 +111,16 @@ class RealPolicyNode(Node):
         self.declare_parameter("plot_on_exit", False)
         self.declare_parameter("analysis_pdf_path", "analyse_robot.pdf")
         self.declare_parameter("kalman_odom_topic", "/odometry/filtered")
+        self.declare_parameter("cube_state_topic", "/go2_fetch/cube_state")
+        self.declare_parameter("goal_xy", [0.0, 0.0])
+        self.declare_parameter("goal_radius", 0.2)
+        self.declare_parameter("policy_world_frame", "odom")
+        self.declare_parameter("lf_foot_frame", "FL_foot")
+        self.declare_parameter("lf_foot_tf_timeout_s", 0.02)
+        self.declare_parameter("robot_twist_in_body_frame", True)
         self.declare_parameter("inekf_lowstate_topic", "/inekf_lowstate")
         self.declare_parameter("lowstate_publish_period_s", 0.005)
-        self.declare_parameter("model_loop_period_s", 0.025)
+        self.declare_parameter("model_loop_period_s", 0.02)
         self.declare_parameter("startup_sleep_s", 0.001)
 
         self.declare_parameter("control_dt", 0.005)
@@ -118,12 +133,23 @@ class RealPolicyNode(Node):
         self.declare_parameter("lowcmd_topic", "rt/lowcmd")
         self.declare_parameter("lowstate_topic", "rt/lowstate")
         self.declare_parameter("sportstate_topic", "rt/sportmodestate")
-        self.declare_parameter("policy_path", "policy_rough.pt")
-        self.declare_parameter("policy_base_dir", "/home/ferdinand/unitree/Deploy_SimToReal_RL_Go2/pre_train")
+        self.declare_parameter("policy_path", "")
+        self.declare_parameter("policy_base_dir", "/home/ferdinand/fetchrobot/ferdinand/go2_fetch_rl")
+        self.declare_parameter(
+            "high_level_policy_path",
+            "logs/rsl_rl/unitree_go2_pushcube_4l/2026-05-15_02-52-05_cam_6/exported/policy.pt",
+        )
+        self.declare_parameter(
+            "low_level_policy_path",
+            "logs/rsl_rl/unitree_go2_velocity_4l/2026-04-05_12-01-56_walk_2/exported/policy.pt",
+        )
+        self.declare_parameter("high_level_rate_hz", 15.0)
+        self.declare_parameter("high_level_num_obs", 48)
+        self.declare_parameter("low_level_num_obs", 45)
         self.declare_parameter("leg_joint2motor_idx", [3, 0, 9, 6, 4, 1, 10, 7, 5, 2, 11, 8])
         self.declare_parameter("default_angles", [-0.1, 0.8, -1.5, 0.1, 0.8, -1.5, -0.1, 1.0, -1.5, 0.1, 1.0, -1.5])
         self.declare_parameter("kps", [25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0])
-        self.declare_parameter("kds", [5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0])
+        self.declare_parameter("kds", [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5])
         self.declare_parameter(
             "arm_waist_joint2motor_idx",
             Parameter.Type.INTEGER_ARRAY,
@@ -140,14 +166,33 @@ class RealPolicyNode(Node):
             "arm_waist_target",
             Parameter.Type.DOUBLE_ARRAY,
         )
-        self.declare_parameter("ang_vel_scale", 0.25)
+        self.declare_parameter("ang_vel_scale", 0.2)
         self.declare_parameter("dof_pos_scale", 1.0)
         self.declare_parameter("dof_vel_scale", 0.05)
         self.declare_parameter("action_scale", 0.25)
         self.declare_parameter("cmd_scale", [0.8, 0.8, 1.0])
         self.declare_parameter("num_actions", 12)
-        self.declare_parameter("num_obs", 52)
+        self.declare_parameter("num_obs", 45)
         self.declare_parameter("max_cmd", [1.0, 1.0, 1.0])
+
+    def _parameter_callback(self, parameters) -> SetParametersResult:
+        for parameter in parameters:
+            if parameter.name != "use_high_level_policy":
+                continue
+            if parameter.type_ != Parameter.Type.BOOL:
+                return SetParametersResult(
+                    successful=False,
+                    reason="use_high_level_policy must be a Boolean",
+                )
+
+            self.use_high_level_policy = bool(parameter.value)
+            self._next_high_level_time = -math.inf
+            source = "PushCube high-level policy" if parameter.value else "joystick"
+            self.get_logger().info(
+                f"Low-level velocity command source changed to: {source}"
+            )
+
+        return SetParametersResult(successful=True)
 
     def _array_parameter(
         self,
@@ -230,6 +275,11 @@ class RealPolicyNode(Node):
 
     def _initialize_ros_io(self) -> None:
         self.create_subscription(Odometry, self.get_parameter("kalman_odom_topic").value, self._kalman_odom_callback, 10)
+        self.create_subscription(Odometry, self.get_parameter("cube_state_topic").value, self._cube_state_callback, 10)
+        self.tf_buffer = tf2_ros.Buffer(cache_time=Duration(seconds=5.0))
+        self.tf_listener = tf2_ros.TransformListener(
+            self.tf_buffer, self, spin_thread=False
+        )
         self.lowstate_publisher = None
         if self.LowStateRos is not None:
             self.lowstate_publisher = self.create_publisher(
@@ -249,21 +299,34 @@ class RealPolicyNode(Node):
         self.get_logger().info("2] --> LE CHANNELFACTORY A ETE CREE")
 
     def _initialize_controller_state(self) -> None:
-        self.get_logger().info("3] ---> CHARGEMENT DE LA POLITIQUE")
-        policy_path = Path(self.config.policy_path).expanduser()
-        if not policy_path.is_absolute():
-            policy_path = Path(self.get_parameter("policy_base_dir").value).expanduser() / policy_path
-        self.policy = torch.jit.load(policy_path)
-        self.policy.eval()
+        self.get_logger().info("3] ---> CHARGEMENT DES POLITIQUES HIGH-LEVEL ET LOW-LEVEL")
+        high_level_path = self._resolve_policy_path("high_level_policy_path")
+        low_level_path = self._resolve_policy_path("low_level_policy_path")
+        self.high_level_policy = torch.jit.load(high_level_path).eval()
+        self.low_level_policy = torch.jit.load(low_level_path).eval()
 
         self.defaut_isaac = [0.1, -0.1, 0.1, -0.1, 0.8, 0.8, 1, 1, -1.5, -1.5, -1.5, -1.5]
         self.base_lin_vel = np.array([0, 0, 0])
-        self.cmd = np.array([0.0, 0.0, 0.0])
+        self.cmd = np.zeros(3, dtype=np.float32)
         self.qj = np.zeros(self.config.num_actions, dtype=np.float32)
         self.dqj = np.zeros(self.config.num_actions, dtype=np.float32)
+        self.high_level_action = np.zeros(3, dtype=np.float32)
         self.action = np.zeros(self.config.num_actions, dtype=np.float32)
         self.target_dof_pos = self.defaut_isaac.copy()
-        self.obs = np.zeros(self.config.num_obs, dtype=np.float32)
+        self.high_level_obs = np.zeros(
+            int(self.get_parameter("high_level_num_obs").value), dtype=np.float32
+        )
+        self.obs = np.zeros(
+            int(self.get_parameter("low_level_num_obs").value), dtype=np.float32
+        )
+        self.robot_pos_xy = np.zeros(2, dtype=np.float32)
+        self.robot_lin_vel_world_xy = np.zeros(2, dtype=np.float32)
+        self.robot_yaw = 0.0
+        self.cube_pos_xy = np.zeros(2, dtype=np.float32)
+        self.cube_lin_vel_xy = np.zeros(2, dtype=np.float32)
+        self.goal_xy = np.array(self.get_parameter("goal_xy").value, dtype=np.float32)
+        self.goal_radius = float(self.get_parameter("goal_radius").value)
+        self._next_high_level_time = -math.inf
 
         self.dt = 0.002
         self.startPos = [0.0] * 12
@@ -300,6 +363,14 @@ class RealPolicyNode(Node):
         self.L_base_ang_vel_input_1 = []
         self.L_base_ang_vel_input_2 = []
         self.L_base_ang_vel_input_3 = []
+
+    def _resolve_policy_path(self, parameter_name: str) -> Path:
+        path = Path(str(self.get_parameter(parameter_name).value)).expanduser()
+        if not path.is_absolute():
+            path = Path(self.get_parameter("policy_base_dir").value).expanduser() / path
+        if not path.is_file():
+            raise FileNotFoundError(f"{parameter_name} does not exist: {path}")
+        return path
 
     def _initialize_robot_interfaces(self) -> None:
         self.get_logger().info("4] ----> INITIALISATION DES CHANNELS")
@@ -354,6 +425,30 @@ class RealPolicyNode(Node):
         self.base_lin_vel_input[1] = msg.twist.twist.linear.y
         self.base_lin_vel_input[2] = msg.twist.twist.linear.z
         self.base_lin_vel_input[3] = msg.twist.twist.angular.z
+        self.robot_pos_xy[:] = [msg.pose.pose.position.x, msg.pose.pose.position.y]
+        orientation = msg.pose.pose.orientation
+        self.robot_yaw = math.atan2(
+            2.0 * (orientation.w * orientation.z + orientation.x * orientation.y),
+            1.0 - 2.0 * (orientation.y * orientation.y + orientation.z * orientation.z),
+        )
+        velocity_xy = np.array(
+            [msg.twist.twist.linear.x, msg.twist.twist.linear.y], dtype=np.float32
+        )
+        if bool(self.get_parameter("robot_twist_in_body_frame").value):
+            cos_yaw = math.cos(self.robot_yaw)
+            sin_yaw = math.sin(self.robot_yaw)
+            velocity_xy = np.array(
+                [
+                    cos_yaw * velocity_xy[0] - sin_yaw * velocity_xy[1],
+                    sin_yaw * velocity_xy[0] + cos_yaw * velocity_xy[1],
+                ],
+                dtype=np.float32,
+            )
+        self.robot_lin_vel_world_xy[:] = velocity_xy
+
+    def _cube_state_callback(self, msg: Odometry) -> None:
+        self.cube_pos_xy[:] = [msg.pose.pose.position.x, msg.pose.pose.position.y]
+        self.cube_lin_vel_xy[:] = [msg.twist.twist.linear.x, msg.twist.twist.linear.y]
 
     def _publish_lowstate(self) -> None:
         if self.lowstate_publisher is None or self.low_state_msg is None:
@@ -375,15 +470,39 @@ class RealPolicyNode(Node):
             observation_min, observation_max = observation_max, observation_min
 
         self.counter += 1
+        self.high_level_obs = self._fake_rng.uniform(
+            observation_min,
+            observation_max,
+            size=int(self.get_parameter("high_level_num_obs").value),
+        ).astype(np.float32)
+        if self.use_high_level_policy:
+            with torch.inference_mode():
+                self.high_level_action = (
+                    self.high_level_policy(torch.from_numpy(self.high_level_obs).unsqueeze(0))
+                    .detach()
+                    .cpu()
+                    .numpy()
+                    .reshape(-1)
+                )
+        else:
+            self.high_level_action = self._fake_rng.uniform(
+                observation_min, observation_max, size=3
+            ).astype(np.float32)
+
         self.obs = self._fake_rng.uniform(
             observation_min,
             observation_max,
-            size=self.config.num_obs,
+            size=int(self.get_parameter("low_level_num_obs").value),
         ).astype(np.float32)
-
-        obs_tensor = torch.from_numpy(self.obs).unsqueeze(0)
+        self.obs[6:9] = self.high_level_action[:3]
         with torch.inference_mode():
-            self.action = self.policy(obs_tensor).detach().cpu().numpy().squeeze()
+            self.action = (
+                self.low_level_policy(torch.from_numpy(self.obs).unsqueeze(0))
+                .detach()
+                .cpu()
+                .numpy()
+                .reshape(-1)
+            )
 
         log_every = max(
             1,
@@ -392,8 +511,8 @@ class RealPolicyNode(Node):
         if self.counter % log_every == 0:
             self.get_logger().info(
                 f"Fake policy step {self.counter}: "
-                f"obs=[{self.obs.min():.3f}, {self.obs.max():.3f}] "
-                f"action=[{self.action.min():.3f}, {self.action.max():.3f}] "
+                f"high_obs={self.high_level_obs.size} high_action={self.high_level_action[:3]} "
+                f"low_obs={self.obs.size} low_action=[{self.action.min():.3f}, {self.action.max():.3f}] "
                 "commands_sent=false"
             )
 
@@ -511,56 +630,9 @@ class RealPolicyNode(Node):
 
     def run_policy_step(self):
         self.counter += 1
-
-        theta1 = []
-        theta2 = []
-        theta3 = []
-        thetav1 = []
-        thetav2 = []
-        thetav3 = []
-        theta1.append(-self.low_state.motor_state[1].q + 1.5708)
-        theta2.append(-self.low_state.motor_state[2].q - 1.7 + pi / 2)
-        theta3.append(-self.low_state.motor_state[0].q)
-        thetav1.append(self.low_state.motor_state[1].dq)
-        thetav2.append(self.low_state.motor_state[2].dq)
-        thetav3.append(-self.low_state.motor_state[0].dq)
-        theta1.append(-self.low_state.motor_state[4].q + 1.5708)
-        theta2.append(-self.low_state.motor_state[5].q - 1.7 + pi / 2)
-        theta3.append(-self.low_state.motor_state[3].q)
-        thetav1.append(self.low_state.motor_state[4].dq)
-        thetav2.append(self.low_state.motor_state[5].dq)
-        thetav3.append(-self.low_state.motor_state[3].dq)
-        theta1.append(-self.low_state.motor_state[7].q + 1.5708)
-        theta2.append(-self.low_state.motor_state[8].q - 1.7 + pi / 2)
-        theta3.append(-self.low_state.motor_state[6].q)
-        thetav1.append(self.low_state.motor_state[7].dq)
-        thetav2.append(self.low_state.motor_state[8].dq)
-        thetav3.append(-self.low_state.motor_state[6].dq)
-        theta1.append(-self.low_state.motor_state[10].q + 1.5708)
-        theta2.append(-self.low_state.motor_state[11].q - 1.7 + pi / 2)
-        theta3.append(-self.low_state.motor_state[9].q)
-        thetav1.append(self.low_state.motor_state[10].dq)
-        thetav2.append(self.low_state.motor_state[11].dq)
-        thetav3.append(-self.low_state.motor_state[9].dq)
-        foot = self.low_state.foot_force
-
-        vx_calc, vy_calc, vz_calc = compute_velocity(theta1, theta2, theta3, thetav1, thetav2, thetav3, foot)
-        vx = self._update_velocity_window(self.vx_window, vx_calc)
-        vy = self._update_velocity_window(self.vy_window, vy_calc)
-        vz = self._update_velocity_window(self.vz_window, vz_calc)
-
-        f0 = self.low_state.foot_force[1] / 100
-        f1 = self.low_state.foot_force[3] / 100
-        f2 = self.low_state.foot_force[0] / 100
-        f3 = self.low_state.foot_force[2] / 100
-
-        ang_vel = np.array([self.low_state.imu_state.gyroscope], dtype=np.float32)
+        ang_vel = np.asarray(self.low_state.imu_state.gyroscope, dtype=np.float32)
         quat = self.low_state.imu_state.quaternion
         gravity_orientation = get_gravity_orientation(quat)
-
-        self.cmd[0] = round(self.remote_controller.ly, 1)
-        self.cmd[1] = round(self.remote_controller.lx * -1, 1)
-        self.cmd[2] = round(self.remote_controller.rx * -1, 1)
 
         for i in range(len(self.config.leg_joint2motor_idx)):
             self.qj[i] = self.low_state.motor_state[self.config.leg_joint2motor_idx[i]].q
@@ -570,45 +642,153 @@ class RealPolicyNode(Node):
         defaut_joint = [0.1, -0.1, 0.1, -0.1, 0.8, 0.8, 1, 1, -1.5, -1.5, -1.5, -1.5]
         qj_obs = qj_obs - defaut_joint
 
-        num_actions = self.config.num_actions
-        self.obs[:4] = [f0, f1, f2, f3]
-        self.obs[4:7] = [self.base_lin_vel_input[0], self.base_lin_vel_input[1], self.base_lin_vel_input[2]]
-        self.obs[7:10] = ang_vel
-        self.obs[10:13] = gravity_orientation
-        self.obs[13:16] = self.cmd * self.config.cmd_scale * self.config.max_cmd
-        self.obs[16 : 16 + num_actions] = qj_obs
-        self.obs[16 + num_actions : 16 + num_actions * 2] = dqj_obs
-        self.obs[16 + num_actions * 2 : 16 + num_actions * 3] = self.action
+        if self.use_high_level_policy:
+            now = time.monotonic()
+            high_period = 1.0 / max(
+                float(self.get_parameter("high_level_rate_hz").value), 1e-6
+            )
+            if now >= self._next_high_level_time:
+                self.high_level_obs = self._build_high_level_observation(
+                    ang_vel, gravity_orientation, qj_obs, dqj_obs
+                )
+                with torch.inference_mode():
+                    self.high_level_action = (
+                        self.high_level_policy(
+                            torch.from_numpy(self.high_level_obs).unsqueeze(0)
+                        )
+                        .detach()
+                        .cpu()
+                        .numpy()
+                        .reshape(-1)
+                    )
+                if self.high_level_action.size != 3:
+                    raise RuntimeError(
+                        f"High-level policy returned {self.high_level_action.size} actions; expected 3"
+                    )
+                if not math.isfinite(self._next_high_level_time):
+                    self._next_high_level_time = now + high_period
+                else:
+                    while self._next_high_level_time <= now:
+                        self._next_high_level_time += high_period
 
-        obs_tensor = torch.from_numpy(self.obs).unsqueeze(0)
+            self.cmd[:] = self.high_level_action
+        else:
+            self.cmd[:] = self._joystick_velocity_command()
+
+        self.obs = np.concatenate(
+            [
+                ang_vel * self.config.ang_vel_scale,
+                gravity_orientation,
+                self.cmd,
+                qj_obs * self.config.dof_pos_scale,
+                dqj_obs * self.config.dof_vel_scale,
+                self.action,
+            ]
+        ).astype(np.float32)
+        self._require_observation_size(
+            self.obs, int(self.get_parameter("low_level_num_obs").value), "Low-level"
+        )
         with torch.inference_mode():
-            self.action = self.policy(obs_tensor).detach().numpy().squeeze()
+            self.action = (
+                self.low_level_policy(torch.from_numpy(self.obs).unsqueeze(0))
+                .detach()
+                .cpu()
+                .numpy()
+                .reshape(-1)
+            )
+        if self.action.size != self.config.num_actions:
+            raise RuntimeError(
+                f"Low-level policy returned {self.action.size} actions; expected {self.config.num_actions}"
+            )
 
         target_dof_pos = self.action * self.config.action_scale + defaut_joint
         for i in range(len(self.config.leg_joint2motor_idx)):
             motor_idx = self.config.leg_joint2motor_idx[i]
             self.low_cmd.motor_cmd[motor_idx].q = target_dof_pos[i]
             set_motor_cmd_velocity(self.low_cmd.motor_cmd[motor_idx], 0)
-            self.low_cmd.motor_cmd[motor_idx].kp = 40
-            self.low_cmd.motor_cmd[motor_idx].kd = 0.5
+            self.low_cmd.motor_cmd[motor_idx].kp = self.config.kps[i]
+            self.low_cmd.motor_cmd[motor_idx].kd = self.config.kds[i]
             self.low_cmd.motor_cmd[motor_idx].tau = 0
         self.send_cmd(self.low_cmd)
 
-        self.L_base_vel_cmd_input_1.append(self.obs[13])
-        self.L_base_vel_cmd_input_2.append(self.obs[14])
-        self.L_base_vel_cmd_input_3.append(self.obs[15])
-        self.L_base_lin_vel_input_1.append(vx * 2)
-        self.L_base_lin_vel_input_2.append(vy * 2)
-        self.L_base_lin_vel_input_3.append(vz * 2)
+        self.L_base_vel_cmd_input_1.append(self.cmd[0])
+        self.L_base_vel_cmd_input_2.append(self.cmd[1])
+        self.L_base_vel_cmd_input_3.append(self.cmd[2])
+        self.L_base_lin_vel_input_1.append(self.robot_lin_vel_world_xy[0])
+        self.L_base_lin_vel_input_2.append(self.robot_lin_vel_world_xy[1])
+        self.L_base_lin_vel_input_3.append(self.base_lin_vel_input[2])
         self.L_base_lin_vel_kalman_input_1.append(self.base_lin_vel_input[0])
         self.L_base_lin_vel_kalman_input_2.append(self.base_lin_vel_input[1])
         self.L_base_lin_vel_kalman_input_3.append(self.base_lin_vel_input[2])
         self.L_base_lin_vel_kalman_input_4.append(self.base_lin_vel_input[3])
-        self.L_base_ang_vel_input_1.append(self.obs[3])
-        self.L_base_ang_vel_input_2.append(self.obs[4])
-        self.L_base_ang_vel_input_3.append(self.obs[5])
+        self.L_base_ang_vel_input_1.append(ang_vel[0])
+        self.L_base_ang_vel_input_2.append(ang_vel[1])
+        self.L_base_ang_vel_input_3.append(ang_vel[2])
 
         return self.obs
+
+    def _joystick_velocity_command(self) -> np.ndarray:
+        command = np.array(
+            [
+                self.remote_controller.ly,
+                -self.remote_controller.lx,
+                -self.remote_controller.rx,
+            ],
+            dtype=np.float32,
+        )
+        command *= self.config.cmd_scale
+        return np.clip(command, -self.config.max_cmd, self.config.max_cmd)
+
+    def _build_high_level_observation(
+        self, ang_vel, gravity_orientation, qj_obs, dqj_obs
+    ) -> np.ndarray:
+        lf_foot_xy = self._lookup_lf_foot_xy()
+        obs = np.concatenate(
+            [
+                np.asarray(ang_vel, dtype=np.float32) * 0.2,
+                np.asarray(gravity_orientation, dtype=np.float32),
+                qj_obs,
+                dqj_obs * 0.05,
+                self.high_level_action,
+                self.robot_pos_xy,
+                self.robot_lin_vel_world_xy,
+                self.cube_pos_xy,
+                self.cube_lin_vel_xy,
+                self.goal_xy,
+                np.array([self.goal_radius], dtype=np.float32),
+                self.goal_xy - self.cube_pos_xy,
+                self.cube_pos_xy - lf_foot_xy,
+            ]
+        ).astype(np.float32)
+        self._require_observation_size(
+            obs, int(self.get_parameter("high_level_num_obs").value), "High-level"
+        )
+        return obs
+
+    def _lookup_lf_foot_xy(self) -> np.ndarray:
+        world_frame = str(self.get_parameter("policy_world_frame").value)
+        foot_frame = str(self.get_parameter("lf_foot_frame").value)
+        timeout = Duration(
+            seconds=float(self.get_parameter("lf_foot_tf_timeout_s").value)
+        )
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                world_frame, foot_frame, Time(), timeout=timeout
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Required TF transform {world_frame} -> {foot_frame} is unavailable: {exc}"
+            ) from exc
+
+        translation = transform.transform.translation
+        return np.array([translation.x, translation.y], dtype=np.float32)
+
+    @staticmethod
+    def _require_observation_size(observation, expected_size: int, label: str) -> None:
+        if observation.size != expected_size:
+            raise RuntimeError(
+                f"{label} observation has {observation.size} values; expected {expected_size}"
+            )
 
     def _update_velocity_window(self, window, value):
         temp = 0
@@ -637,7 +817,7 @@ class RealPolicyNode(Node):
                 self.run_policy_step()
                 time.sleep(float(self.get_parameter("model_loop_period_s").value))
                 self.Liste_t.append(time_ms)
-                time_ms += 25
+                time_ms += 20
                 if self.remote_controller.button[KeyMap.select] == 1:
                     self.move_to_ground()
                     break
