@@ -69,6 +69,7 @@ class CubeTrackerNode(Node):
 
         self.model_path = (self.get_parameter('model_path').value)
         self.conf_threshold = float(self.get_parameter('conf_threshold').value)
+        self.yolo_classes = [str(v) for v in self.get_parameter('yolo_classes').value]
         self.max_mask_samples = int(self.get_parameter('max_mask_samples').value)
         self.min_inlier_points = int(self.get_parameter('min_inlier_points').value)
         self.min_depth_m = float(self.get_parameter('min_depth_m').value)
@@ -166,6 +167,7 @@ class CubeTrackerNode(Node):
 
         self.declare_parameter('model_path', '/home/ferdinand/unitree/go2_fetch_ros2/fetch/models/yoloe-26l-seg.onnx')
         self.declare_parameter('conf_threshold', 0.1)
+        self.declare_parameter('yolo_classes', ['box'])
 
         self.declare_parameter('max_mask_samples', 2500)
         self.declare_parameter('min_inlier_points', 30)
@@ -203,6 +205,14 @@ class CubeTrackerNode(Node):
         resolved_model_path = os.path.expanduser(os.path.expandvars(str(self.model_path)))
         self.model_path = resolved_model_path
         model = YOLO(resolved_model_path)
+
+        if self.yolo_classes:
+            try:
+                model.set_classes(self.yolo_classes)
+                self.get_logger().info(f'YOLOE classes set to: {self.yolo_classes}')
+            except Exception as exc:
+                self.get_logger().warn(f'Could not set YOLOE classes: {exc}')
+
         return model
 
     def _prepare_text_embedding_asset(self) -> None:

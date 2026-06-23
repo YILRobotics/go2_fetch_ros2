@@ -7,8 +7,14 @@ ROS2 packages for the Unitree Go2 robot fetch project. Running a RL policy to pu
 
 ## Connect to Unitree with SSH
 
+Ethernet 
 ```bash
 ssh unitree@192.168.123.18 # password 123
+```
+
+Wifi
+```bash
+ssh unitree@192.168.11.8  # password 123
 ```
 
 run ros2 on computer
@@ -36,7 +42,7 @@ ros2 topic pub --once /go2_fetch/mode std_msgs/msg/String "{data: policy}"
 
 ros2 topic pub /cmd_vel geometry_msgs/msg/Twist \
 "{linear: {x: 0.03, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" -r 10
-```bash
+```
 
 ## Make conda env for deploying RL policy with ROS2
 
@@ -99,6 +105,12 @@ maybe also because ros doesnt use python from library:
 export PYTHONPATH="$(python -c 'import site; print(site.getsitepackages()[0])'):$PYTHONPATH"
 ```
 
+
+
+build problem in docker with conda 
+
+colcon build --symlink-install --cmake-args -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-rpath,/home/unitree/miniforge3/envs/go2_env_go2/lib -L/home/unitree/miniforge3/envs/go2_env_go2/lib" -DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath,/home/unitree/miniforge3/envs/go2_env_go2/lib -L/home/unitree/miniforge3/envs/go2_env_go2/lib" -DPYTHON_EXECUTABLE=/home/unitree/miniforge3/envs/go2_env_go2/bin/python3
+
 ## Realsense Camera
 
 start realsense camera
@@ -109,6 +121,8 @@ ros2 run realsense2_camera realsense2_camera_node \
   -r __ns:=/realsense \
   -p enable_color:=true \
   -p enable_depth:=true \
+  -p enable_infra1:=false \
+  -p enable_infra2:=false \
   -p pointcloud.enable:=true \
   -p pointcloud.stream_filter:=2 \
   -p pointcloud.stream_index_filter:=0 \
@@ -119,6 +133,35 @@ ros2 run realsense2_camera realsense2_camera_node \
   -p temporal_filter.enable:=true \
   -p enable_sync:=true
 ```
+
+On Jetson: 
+```bash
+ros2 run realsense2_camera realsense2_camera_node \
+  --ros-args \
+  -r __ns:=/realsense \
+  -p enable_color:=true \
+  -p enable_depth:=true \
+  -p enable_infra1:=false \
+  -p enable_infra2:=false \
+  -p pointcloud__neon_.enable:=true \
+  -p pointcloud.stream_filter:=2 \
+  -p pointcloud.stream_index_filter:=0 \
+  -p align_depth.enable:=true \
+  -p decimation_filter.enable:=true \
+  -p decimation_filter.filter_magnitude:=4 \
+  -p spatial_filter.enable:=true \
+  -p temporal_filter.enable:=true \
+  -p enable_sync:=true
+```
+
+for foxglove ssh tunnel
+
+ssh -L 8765:localhost:8765 unitree@192.168.11.10
+
+start foxglove
+
+ros2 launch foxglove_bridge foxglove_bridge_launch.xml
+
 
 
 ## Foxglove
