@@ -15,6 +15,9 @@ cube_tracker_node:
     # YOLO model path.
     model_path: /home/ferdinand/unitree/src/go2_fetch_ros2/fetch/models/yoloe-26l-seg_box.onnx
     # model_path: /weak_motorhome/ferdinand/unitree/go2_fetch_ros2/fetch/models/yoloe-26l-seg_ball_round_object_sphere_round.onnx
+    # For YOLOE .pt open-vocabulary models, these are passed to model.set_classes(...).
+    # For exported .onnx models, prompts/classes are normally baked into the model.
+    yolo_classes: ["box"]
     # Minimum confidence for a YOLO candidate.
     conf_threshold: 0.1
 
