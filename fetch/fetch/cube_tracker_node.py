@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+#!/home/unitree/miniconda3/envs/env_deploy/bin/python
+
 """Cube tracker node using YOLOE segmentation + Realsense point cloud."""
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/unitree/miniconda3/envs/env_deploy/bin/python
 """Publish a saved image and a colored PointCloud2 on ROS 2 topics."""
 
 from __future__ import annotations

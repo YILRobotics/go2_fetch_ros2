@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/unitree/miniconda3/envs/env_deploy/bin/python
 """ROS 2 node version of Deploy_SimToReal_RL_Go2/deploy_real."""
 
 from __future__ import annotations

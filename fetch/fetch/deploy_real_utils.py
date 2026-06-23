@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/unitree/miniconda3/envs/env_deploy/bin/python
 """Helpers shared by the real Go2 deployment ROS node."""
 
 from __future__ import annotations

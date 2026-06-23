@@ -120,6 +120,24 @@ ros2 run realsense2_camera realsense2_camera_node \
   -p enable_sync:=true
 ```
 
+
+## Foxglove
+
+for foxglove ssh tunnel
+
+ssh -L 8765:localhost:8765 unitree@192.168.11.10
+
+start foxglove
+
+ros2 launch foxglove_bridge foxglove_bridge_launch.xml
+
+ros2 launch foxglove_bridge foxglove_bridge_launch.xml topic_whitelist:="['/rosout', '/utlidar/.*']"
+
+ros2 launch foxglove_bridge foxglove_bridge_launch.xml params_file:=/src/go2_fetch_ros2/fetch/config/foxglove_config.yaml
+
+
+
+
 ### Final working command AND RECOMENDED TO ADD TO YOUR `.bashrc` FILE on the PC:
 
 ```bash
@@ -283,4 +301,3 @@ pip install --user onnxslim
 Your robot is equipped with an 8GB Xavier NX or a similar Jetson module. You have plenty of storage (203GB free) and RAM (6GB available), which is more than enough to run the SLAM and LiDAR nodes you have active.
 
 However, the "package not found" for Jetpack suggests that if you need to compile GPU-accelerated code (like custom CUDA kernels), you might need to fix your source lists or rely on the pre-installed libraries in /usr/local/cuda-11.4/.
-

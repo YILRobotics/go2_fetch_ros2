@@ -1,0 +1,22 @@
+foxglove_bridge:
+  ros__parameters:
+    # Allow only specific topics using regular expressions
+    topic_whitelist:
+      - "^/rosout$"
+      - "^/camera/color/image_raw$"
+      - "^/camera/color/camera_info$"
+      - "^/frontvideostream$"
+      - "^/uslam/localization/odom$"
+      - "^/imu$"
+      - "^/robot_description$"
+      - "^/tf$"
+      - "^/odometry/filtered$"
+      - "^/initialpose$"
+      - "^/parameter_events$"
+      - "^/go2_fetch/.*$"  # Allow all topics under the go2_fetch_ros2 namespace
+      - "^/camera/color/camera_info$"
+      - "^/camera/color/image_raw$"
+     # - "^/camera/color/image_raw/compressed$"
+      - "^/camera/depth/camera_info$"
+      - "^/camera/depth/color/points$"
+

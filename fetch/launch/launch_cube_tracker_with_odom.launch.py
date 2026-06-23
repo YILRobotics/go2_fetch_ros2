@@ -43,7 +43,7 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[{
             'enable_color': True,
             'enable_depth': True,
-            'pointcloud.enable': True,
+            'pointcloud__neon_.enable': True,
             'pointcloud.stream_filter': 2,
             'pointcloud.stream_index_filter': 0,
             'pointcloud.ordered_pc': True,
@@ -132,7 +132,7 @@ def generate_launch_description() -> LaunchDescription:
         realsense,
         dummy_realsense_publisher,
         cube_tracker,
-        rviz_with_config,
+        # rviz_with_config,
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource([full_state_publisher_launch_file]),
         ),
