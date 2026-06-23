@@ -51,6 +51,9 @@ class RealPolicyNode(Node):
         self._stop_event = threading.Event()
         self._worker_thread = None
         self.fake_observations_mode = bool(self.get_parameter("fake_observations_mode").value)
+        self.fake_cube_observation_mode = bool(
+            self.get_parameter("fake_cube_observation_mode").value
+        )
         self.use_high_level_policy = bool(
             self.get_parameter("use_high_level_policy").value
         )
@@ -79,6 +82,11 @@ class RealPolicyNode(Node):
 
         if not self.commands_enabled:
             self.get_logger().warn("Robot command output is disabled.")
+        if self.fake_cube_observation_mode and not self.fake_observations_mode:
+            self.get_logger().warn(
+                "Fake cube observation enabled: robot observations remain real, "
+                "but cube position/velocity will come from parameters."
+            )
 
         if bool(self.get_parameter("start_policy_on_startup").value):
             worker_target = (
@@ -105,6 +113,9 @@ class RealPolicyNode(Node):
         self.declare_parameter("fake_observation_min", -1.0)
         self.declare_parameter("fake_observation_max", 1.0)
         self.declare_parameter("fake_log_every_n_steps", 100)
+        self.declare_parameter("fake_cube_observation_mode", False)
+        self.declare_parameter("fake_cube_position_xy", [0.8, 0.0])
+        self.declare_parameter("fake_cube_velocity_xy", [0.0, 0.0])
         self.declare_parameter("auto_switch_to_low_level", True)
         self.declare_parameter("wait_for_start_button", True)
         self.declare_parameter("wait_for_a_button", True)
@@ -150,6 +161,7 @@ class RealPolicyNode(Node):
         self.declare_parameter("default_angles", [-0.1, 0.8, -1.5, 0.1, 0.8, -1.5, -0.1, 1.0, -1.5, 0.1, 1.0, -1.5])
         self.declare_parameter("kps", [25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0])
         self.declare_parameter("kds", [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5])
+        self.declare_parameter("torque_limits", [23.7, 23.7, 35.55, 23.7, 23.7, 35.55, 23.7, 23.7, 35.55, 23.7, 23.7, 35.55])
         self.declare_parameter(
             "arm_waist_joint2motor_idx",
             Parameter.Type.INTEGER_ARRAY,
@@ -177,6 +189,19 @@ class RealPolicyNode(Node):
 
     def _parameter_callback(self, parameters) -> SetParametersResult:
         for parameter in parameters:
+            if parameter.name == "fake_cube_observation_mode":
+                if parameter.type_ != Parameter.Type.BOOL:
+                    return SetParametersResult(
+                        successful=False,
+                        reason="fake_cube_observation_mode must be a Boolean",
+                    )
+                self.fake_cube_observation_mode = bool(parameter.value)
+                if self.fake_cube_observation_mode:
+                    self._apply_fake_cube_observation()
+                source = "fake cube parameters" if parameter.value else "cube_state_topic"
+                self.get_logger().info(f"Cube observation source changed to: {source}")
+                continue
+
             if parameter.name != "use_high_level_policy":
                 continue
             if parameter.type_ != Parameter.Type.BOOL:
@@ -215,6 +240,7 @@ class RealPolicyNode(Node):
             leg_joint2motor_idx=list(self.get_parameter("leg_joint2motor_idx").value),
             kps=list(self.get_parameter("kps").value),
             kds=list(self.get_parameter("kds").value),
+            torque_limits=list(self.get_parameter("torque_limits").value),
             default_angles=np.array(self.get_parameter("default_angles").value, dtype=np.float32),
             arm_waist_joint2motor_idx=self._array_parameter(
                 "arm_waist_joint2motor_idx",
@@ -243,14 +269,14 @@ class RealPolicyNode(Node):
         )
 
     def _load_unitree_sdk(self) -> None:
-        from unitree_sdk2_python.unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
-        from unitree_sdk2_python.unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelPublisher, ChannelSubscriber
-        from unitree_sdk2_python.unitree_sdk2py.go2.sport.sport_client import SportClient
-        from unitree_sdk2_python.unitree_sdk2py.idl.default import unitree_go_msg_dds__LowCmd_, unitree_go_msg_dds__LowState_
-        from unitree_sdk2_python.unitree_sdk2py.idl.unitree_go.msg.dds_ import LowCmd_ as LowCmdGo
-        from unitree_sdk2_python.unitree_sdk2py.idl.unitree_go.msg.dds_ import LowState_ as LowStateGo
-        from unitree_sdk2_python.unitree_sdk2py.idl.unitree_go.msg.dds_ import SportModeState_
-        from unitree_sdk2_python.unitree_sdk2py.utils.crc import CRC
+        from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
+        from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelPublisher, ChannelSubscriber
+        from unitree_sdk2py.go2.sport.sport_client import SportClient
+        from unitree_sdk2py.idl.default import unitree_go_msg_dds__LowCmd_, unitree_go_msg_dds__LowState_
+        from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowCmd_ as LowCmdGo
+        from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowState_ as LowStateGo
+        from unitree_sdk2py.idl.unitree_go.msg.dds_ import SportModeState_
+        from unitree_sdk2py.utils.crc import CRC
 
         self.MotionSwitcherClient = MotionSwitcherClient
         self.ChannelFactoryInitialize = ChannelFactoryInitialize
@@ -324,6 +350,8 @@ class RealPolicyNode(Node):
         self.robot_yaw = 0.0
         self.cube_pos_xy = np.zeros(2, dtype=np.float32)
         self.cube_lin_vel_xy = np.zeros(2, dtype=np.float32)
+        if self.fake_cube_observation_mode:
+            self._apply_fake_cube_observation()
         self.goal_xy = np.array(self.get_parameter("goal_xy").value, dtype=np.float32)
         self.goal_radius = float(self.get_parameter("goal_radius").value)
         self._next_high_level_time = -math.inf
@@ -447,8 +475,20 @@ class RealPolicyNode(Node):
         self.robot_lin_vel_world_xy[:] = velocity_xy
 
     def _cube_state_callback(self, msg: Odometry) -> None:
+        if self.fake_cube_observation_mode:
+            return
         self.cube_pos_xy[:] = [msg.pose.pose.position.x, msg.pose.pose.position.y]
         self.cube_lin_vel_xy[:] = [msg.twist.twist.linear.x, msg.twist.twist.linear.y]
+
+    def _apply_fake_cube_observation(self) -> None:
+        self.cube_pos_xy[:] = self._xy_parameter("fake_cube_position_xy")
+        self.cube_lin_vel_xy[:] = self._xy_parameter("fake_cube_velocity_xy")
+
+    def _xy_parameter(self, name: str) -> np.ndarray:
+        values = list(self.get_parameter(name).value)
+        if len(values) != 2:
+            raise ValueError(f"{name} must contain exactly two values [x, y]")
+        return np.array(values, dtype=np.float32)
 
     def _publish_lowstate(self) -> None:
         if self.lowstate_publisher is None or self.low_state_msg is None:
@@ -457,9 +497,23 @@ class RealPolicyNode(Node):
         copy_low_state_dds_to_ros(self.low_state_msg, ros_msg)
         self.lowstate_publisher.publish(ros_msg)
 
+    def _apply_torque_limits(self, cmd) -> None:
+        limits = getattr(self.config, "torque_limits", None)
+        if limits is None:
+            return
+        for i, limit in enumerate(limits):
+            if i >= len(cmd.motor_cmd):
+                break
+            limit = abs(float(limit))
+            if limit <= 0.0:
+                cmd.motor_cmd[i].tau = 0.0
+            else:
+                cmd.motor_cmd[i].tau = float(np.clip(cmd.motor_cmd[i].tau, -limit, limit))
+
     def send_cmd(self, cmd) -> None:
         if not self.commands_enabled:
             return
+        self._apply_torque_limits(cmd)
         cmd.crc = self.CRC().Crc(cmd)
         self.lowcmd_publisher_.Write(cmd)
 
@@ -743,6 +797,8 @@ class RealPolicyNode(Node):
         self, ang_vel, gravity_orientation, qj_obs, dqj_obs
     ) -> np.ndarray:
         lf_foot_xy = self._lookup_lf_foot_xy()
+        if self.fake_cube_observation_mode:
+            self._apply_fake_cube_observation()
         obs = np.concatenate(
             [
                 np.asarray(ang_vel, dtype=np.float32) * 0.2,

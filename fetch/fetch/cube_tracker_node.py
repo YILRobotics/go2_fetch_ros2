@@ -78,7 +78,7 @@ class CubeTrackerNode(Node):
         self.detection_timeout_s = float(self.get_parameter('detection_timeout_s').value)
         self.velocity_window_s = float(self.get_parameter('velocity_window_s').value)
         self.cube_state_low_pass_cutoff_hz = float(
-            self.get_parameter('cube_state_low_pass_cutoff_hz').value
+        self.get_parameter('cube_state_low_pass_cutoff_hz').value
         )
         self.cube_dimensions = tuple(float(v) for v in self.get_parameter('cube_dimensions').value)
         if len(self.cube_dimensions) != 3 or any(v <= 0.0 for v in self.cube_dimensions):
@@ -97,8 +97,15 @@ class CubeTrackerNode(Node):
         self.target_frame = self.get_parameter('target_frame').value
         self.publish_debug_image = bool(self.get_parameter('publish_debug_image').value)
         self.publish_mask_image = bool(self.get_parameter('publish_mask_image').value)
+        self.cube_position_offset_xyz = tuple(float(v) for v in self.get_parameter('cube_position_offset_xyz').value)
         self.tf_timeout_s = float(self.get_parameter('tf_timeout_s').value)
+        self.mask_erode_iterations = int(self.get_parameter('mask_erode_iterations').value)
+        self.mask_erode_kernel_size = int(self.get_parameter('mask_erode_kernel_size').value)
+        self.central_mask_keep_ratio = float(self.get_parameter('central_mask_keep_ratio').value)
+        self.max_pose_jump_m = float(self.get_parameter('max_pose_jump_m').value)
+        self.max_pose_speed_mps = float(self.get_parameter('max_pose_speed_mps').value)
 
+        self.mask_erode_iterations = int(self.get_parameter('mask_erode_iterations').value)
         self._rng = np.random.default_rng(seed=1234)
         self._bridge = CvBridge()
         self._history: deque[Tuple[float, float, float]] = deque()
@@ -144,7 +151,7 @@ class CubeTrackerNode(Node):
         self._sync = ApproximateTimeSynchronizer(
             [self._image_sub, self._pointcloud_sub],
             queue_size=30,
-            slop=0.2,
+            slop=0.4,
             allow_headerless=False,
         )
         self._sync.registerCallback(self._sync_cb)
@@ -188,7 +195,7 @@ class CubeTrackerNode(Node):
         self.declare_parameter('hsv_blue_upper', [135, 255, 255])
         self.declare_parameter('detection_timeout_s', 0.35)
         self.declare_parameter('velocity_window_s', 0.6)
-        self.declare_parameter('cube_state_low_pass_cutoff_hz', 10.0)
+        self.declare_parameter('cube_state_low_pass_cutoff_hz', 2.0)
         self.declare_parameter('cube_dimensions', [0.16, 0.16, 0.16])
 
         self.declare_parameter('target_frame', 'base_link')
@@ -196,6 +203,14 @@ class CubeTrackerNode(Node):
 
         self.declare_parameter('publish_debug_image', False)
         self.declare_parameter('publish_mask_image', True)
+
+        self.declare_parameter('cube_position_offset_xyz', [0.0, 0.0, 0.0])
+
+        self.declare_parameter('mask_erode_iterations', 1)
+        self.declare_parameter('mask_erode_kernel_size', 5)
+        self.declare_parameter('central_mask_keep_ratio', 0.5)
+        self.declare_parameter('max_pose_jump_m', 0.30)
+        self.declare_parameter('max_pose_speed_mps', 1.0)
 
     def _load_model(self):
         if YOLO is None:
@@ -370,7 +385,8 @@ class CubeTrackerNode(Node):
             self._publish_debug(image, result, mask)
             mark('publish_debug_image_2d')
 
-        centroid = self._extract_filtered_centroid(mask, cloud_msg)
+        depth_mask = self._erode_mask_for_depth(mask)
+        centroid = self._extract_filtered_centroid(depth_mask, cloud_msg)
         mark('extract_filtered_centroid')
         if centroid is None:
             reason = self._last_centroid_reject_reason or 'unknown reason'
@@ -399,8 +415,22 @@ class CubeTrackerNode(Node):
                 self.get_logger().warn(f'TF transform failed ({cloud_msg.header.frame_id}->{self.target_frame}): {exc}')
             mark('tf_transform')
 
-        raw_pos_xyz = (float(point.point.x), float(point.point.y), float(point.point.z))
-        pos_xyz = self._low_pass_cube_position(raw_pos_xyz)
+        now_filter_s = self.get_clock().now().nanoseconds * 1e-9
+        raw_pos_array = np.asarray(
+            [float(point.point.x), float(point.point.y), float(point.point.z)],
+            dtype=np.float64,
+        )
+
+        if not self._is_reasonable_pose_jump(raw_pos_array, now_filter_s):
+            self._maybe_log_pipeline('pipeline: rejected unreasonable pose jump')
+            log_timing('pose_jump_rejected')
+            return None
+
+        raw_pos_xyz = (float(raw_pos_array[0]), float(raw_pos_array[1]), float(raw_pos_array[2]))
+        filtered_pos_xyz = self._low_pass_cube_position(raw_pos_xyz, now_s=now_filter_s)
+                pos_xyz = tuple(
+            float(filtered_pos_xyz[i] + self.cube_position_offset_xyz[i]) for i in range(3)
+        )
         pos_xy = pos_xyz[:2]
         vel_xy = self._estimate_velocity(pos_xy)
         mark('estimate_velocity')
@@ -596,11 +626,59 @@ class CubeTrackerNode(Node):
             return None
         return mask
 
+    def _erode_mask_for_depth(self, mask: np.ndarray) -> np.ndarray:
+    if self.mask_erode_iterations <= 0:
+        return mask
+
+    kernel_size = max(1, int(self.mask_erode_kernel_size))
+    if kernel_size % 2 == 0:
+        kernel_size += 1
+
+    kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
+    eroded = cv2.erode(
+        mask.astype(np.uint8),
+        kernel,
+        iterations=self.mask_erode_iterations,
+    ).astype(bool)
+
+    # If the cube is far away, erosion may remove too many pixels.
+    # In that case, keep the original mask.
+    if int(eroded.sum()) < self.min_inlier_points:
+        return mask
+
+    return eroded
+
+
+    def _keep_central_mask_pixels(
+        self,
+        xs: np.ndarray,
+        ys: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        if xs.size == 0:
+            return xs, ys
+
+        keep_ratio = float(np.clip(self.central_mask_keep_ratio, 0.1, 1.0))
+        if keep_ratio >= 1.0:
+            return xs, ys
+
+        cx = np.median(xs)
+        cy = np.median(ys)
+        r = np.sqrt((xs.astype(np.float64) - cx) ** 2 + (ys.astype(np.float64) - cy) ** 2)
+        threshold = np.quantile(r, keep_ratio)
+
+        keep = r <= threshold
+        if np.count_nonzero(keep) < self.min_inlier_points:
+            return xs, ys
+
+        return xs[keep], ys[keep]
+
     def _extract_filtered_centroid(self, mask: np.ndarray, cloud_msg: PointCloud2) -> Optional[np.ndarray]:
         ys, xs = np.where(mask)
         if xs.size == 0:
             self._last_centroid_reject_reason = 'mask has zero valid pixels'
             return None
+
+        xs, ys = self._keep_central_mask_pixels(xs, ys)
 
         if xs.size > self.max_mask_samples:
             pick = self._rng.choice(xs.size, size=self.max_mask_samples, replace=False)
@@ -696,9 +774,37 @@ class CubeTrackerNode(Node):
             )
             return None
 
+        z_median = np.median(points[:, 2])
+        z_mad = np.median(np.abs(points[:, 2] - z_median))
+        z_mad = max(float(z_mad), 1e-4)
+
+        depth_cluster = np.abs(points[:, 2] - z_median) < 2.5 * z_mad
+        points = points[depth_cluster]
+
+        if points.shape[0] < self.min_inlier_points:
+            self._last_centroid_reject_reason = (
+                f'too few depth-cluster inliers: {points.shape[0]} < '
+                f'min_inlier_points({self.min_inlier_points})'
+            )
+            return None
+
         self._last_centroid_reject_reason = ''
 
-        return np.mean(points, axis=0)
+        return np.median(points, axis=0)
+
+    def _is_reasonable_pose_jump(
+        self,
+        sample_xyz: np.ndarray,
+        now_s: float,
+    ) -> bool:
+        if self._filtered_cube_position is None or self._last_filter_time_s is None:
+            return True
+
+        dt = max(1e-3, now_s - self._last_filter_time_s)
+        planar_jump = float(np.linalg.norm(sample_xyz[:2] - self._filtered_cube_position[:2]))
+
+        allowed_jump = self.max_pose_jump_m + self.max_pose_speed_mps * dt
+        return planar_jump <= allowed_jump
 
     def _low_pass_cube_position(
         self,
@@ -780,7 +886,10 @@ class CubeTrackerNode(Node):
         marker.pose.position.x = det.position_xyz[0]
         marker.pose.position.y = det.position_xyz[1]
         marker.pose.position.z = det.position_xyz[2]
-        marker.pose.orientation.w = 1.0
+        marker.pose.orientation.x = 0.0
+        marker.pose.orientation.y = 0.0
+        marker.pose.orientation.z = 0.0
+        marker.pose.orientation.w = 0.0
         marker.scale.x = self.cube_dimensions[0]
         marker.scale.y = self.cube_dimensions[1]
         marker.scale.z = self.cube_dimensions[2]

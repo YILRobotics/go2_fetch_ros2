@@ -62,6 +62,7 @@ class DeployRealConfig:
     leg_joint2motor_idx: list[int]
     kps: list[float]
     kds: list[float]
+    torque_limits: list[float]
     default_angles: np.ndarray
     arm_waist_joint2motor_idx: list[int]
     arm_waist_kps: list[float]

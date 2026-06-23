@@ -176,9 +176,18 @@ ros2 launch foxglove_bridge foxglove_bridge_launch.xml
 
 ros2 launch foxglove_bridge foxglove_bridge_launch.xml topic_whitelist:="['/rosout', '/utlidar/.*']"
 
-ros2 launch foxglove_bridge foxglove_bridge_launch.xml params_file:=/src/go2_fetch_ros2/fetch/config/foxglove_config.yaml
+ros2 run foxglove_bridge foxglove_bridge --ros-args --params-file /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/config/foxglove_config.yaml
 
 
+
+## Or RVIZ2
+
+rviz2 -d /home/ferdinand/unitree/src/go2_fetch_ros2/fetch/rviz/realsense.rviz
+
+
+
+
+on robot: export CYCLONEDDS_URI="<CycloneDDS><Domain><General><NetworkInterfaceAddress>enP8p1s0</NetworkInterfaceAddress><AllowMulticast>true</AllowMulticast></General></Domain></CycloneDDS>"
 
 
 ### Final working command AND RECOMENDED TO ADD TO YOUR `.bashrc` FILE on the PC:

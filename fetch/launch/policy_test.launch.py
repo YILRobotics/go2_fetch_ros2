@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/unitree/miniconda3/envs/env_deploy/bin/python
 
 import os
 
