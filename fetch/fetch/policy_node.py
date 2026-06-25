@@ -18,16 +18,19 @@ from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.time import Time
 import tf2_ros
+from visualization_msgs.msg import Marker
 
 from fetch.deploy_real_utils import (
     DeployRealConfig,
     KeyMap,
     RemoteController,
-    add_unitree_sdk_paths,
-    copy_low_state_dds_to_ros,
+    compute_go2_lowcmd_crc,
     create_zero_cmd,
     get_gravity_orientation,
     init_cmd_go,
+    set_motor_cmd_gains,
+    set_motor_cmd_position,
+    set_motor_cmd_torque,
     set_motor_cmd_velocity,
 )
 
@@ -54,9 +57,7 @@ class RealPolicyNode(Node):
         self.fake_cube_observation_mode = bool(
             self.get_parameter("fake_cube_observation_mode").value
         )
-        self.use_high_level_policy = bool(
-            self.get_parameter("use_high_level_policy").value
-        )
+        self.use_high_level_policy = False
         self.add_on_set_parameters_callback(self._parameter_callback)
         self.commands_enabled = (
             bool(self.get_parameter("send_commands").value)
@@ -66,18 +67,17 @@ class RealPolicyNode(Node):
             int(self.get_parameter("fake_observation_seed").value)
         )
 
-        self.get_logger().info("1] -> LE FICHIER DE CONFIG A BIEN ETE CHARGE")
+        self.get_logger().info("1] -> Configuration file loaded")
         self._initialize_controller_state()
+        self._initialize_fake_cube_publisher()
 
         if self.fake_observations_mode:
             self.get_logger().warn(
                 "FAKE OBSERVATION MODE ENABLED: DDS is not initialized and robot commands are disabled."
             )
         else:
-            self._load_unitree_sdk()
             self._load_ros_interfaces()
             self._initialize_ros_io()
-            self._initialize_dds()
             self._initialize_robot_interfaces()
 
         if not self.commands_enabled:
@@ -116,9 +116,13 @@ class RealPolicyNode(Node):
         self.declare_parameter("fake_cube_observation_mode", False)
         self.declare_parameter("fake_cube_position_xy", [0.8, 0.0])
         self.declare_parameter("fake_cube_velocity_xy", [0.0, 0.0])
+        self.declare_parameter("fake_cube_publish_period_s", 0.05)
+        self.declare_parameter("cube_marker_topic", "/go2_fetch/cube_marker")
+        self.declare_parameter("cube_dimensions", [0.16, 0.16, 0.16])
         self.declare_parameter("auto_switch_to_low_level", True)
         self.declare_parameter("wait_for_start_button", True)
         self.declare_parameter("wait_for_a_button", True)
+        self.declare_parameter("high_level_toggle_button", "X")
         self.declare_parameter("plot_on_exit", False)
         self.declare_parameter("analysis_pdf_path", "analyse_robot.pdf")
         self.declare_parameter("kalman_odom_topic", "/odometry/filtered")
@@ -133,6 +137,7 @@ class RealPolicyNode(Node):
         self.declare_parameter("lowstate_publish_period_s", 0.005)
         self.declare_parameter("model_loop_period_s", 0.02)
         self.declare_parameter("startup_sleep_s", 0.001)
+        self.declare_parameter("motor_log_every_n_steps", 50)
 
         self.declare_parameter("control_dt", 0.005)
         self.declare_parameter("msg_type", "go")
@@ -141,9 +146,9 @@ class RealPolicyNode(Node):
             "weak_motor",
             Parameter.Type.INTEGER_ARRAY,
         )
-        self.declare_parameter("lowcmd_topic", "rt/lowcmd")
-        self.declare_parameter("lowstate_topic", "rt/lowstate")
-        self.declare_parameter("sportstate_topic", "rt/sportmodestate")
+        self.declare_parameter("lowcmd_topic", "/lowcmd")
+        self.declare_parameter("lowstate_topic", "/lf/lowstate")
+        self.declare_parameter("sportstate_topic", "/sportmodestate")
         self.declare_parameter("policy_path", "")
         self.declare_parameter("policy_base_dir", "/home/ferdinand/fetchrobot/ferdinand/go2_fetch_rl")
         self.declare_parameter(
@@ -198,6 +203,7 @@ class RealPolicyNode(Node):
                 self.fake_cube_observation_mode = bool(parameter.value)
                 if self.fake_cube_observation_mode:
                     self._apply_fake_cube_observation()
+                    self._publish_fake_cube_state()
                 source = "fake cube parameters" if parameter.value else "cube_state_topic"
                 self.get_logger().info(f"Cube observation source changed to: {source}")
                 continue
@@ -210,12 +216,16 @@ class RealPolicyNode(Node):
                     reason="use_high_level_policy must be a Boolean",
                 )
 
-            self.use_high_level_policy = bool(parameter.value)
             self._next_high_level_time = -math.inf
-            source = "PushCube high-level policy" if parameter.value else "joystick"
-            self.get_logger().info(
-                f"Low-level velocity command source changed to: {source}"
-            )
+            if not bool(parameter.value):
+                self.use_high_level_policy = False
+                self.get_logger().info(
+                    "High-level policy disabled by parameter; low-level velocity command source is joystick"
+                )
+            else:
+                self.get_logger().info(
+                    "High-level policy allowed by parameter; press the remote toggle button to enable it"
+                )
 
         return SetParametersResult(successful=True)
 
@@ -268,36 +278,20 @@ class RealPolicyNode(Node):
             num_obs=int(self.get_parameter("num_obs").value),
         )
 
-    def _load_unitree_sdk(self) -> None:
-        from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
-        from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelPublisher, ChannelSubscriber
-        from unitree_sdk2py.go2.sport.sport_client import SportClient
-        from unitree_sdk2py.idl.default import unitree_go_msg_dds__LowCmd_, unitree_go_msg_dds__LowState_
-        from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowCmd_ as LowCmdGo
-        from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowState_ as LowStateGo
-        from unitree_sdk2py.idl.unitree_go.msg.dds_ import SportModeState_
-        from unitree_sdk2py.utils.crc import CRC
-
-        self.MotionSwitcherClient = MotionSwitcherClient
-        self.ChannelFactoryInitialize = ChannelFactoryInitialize
-        self.ChannelPublisher = ChannelPublisher
-        self.ChannelSubscriber = ChannelSubscriber
-        self.SportClient = SportClient
-        self.LowCmdDefault = unitree_go_msg_dds__LowCmd_
-        self.LowStateDefault = unitree_go_msg_dds__LowState_
-        self.LowCmdGo = LowCmdGo
-        self.LowStateGo = LowStateGo
-        self.SportModeState = SportModeState_
-        self.CRC = CRC
-
     def _load_ros_interfaces(self) -> None:
         try:
+            from unitree_go.msg import LowCmd as LowCmdRos
             from unitree_go.msg import LowState as LowStateRos
+            from unitree_go.msg import SportModeState as SportModeStateRos
 
+            self.LowCmdRos = LowCmdRos
             self.LowStateRos = LowStateRos
+            self.SportModeStateRos = SportModeStateRos
         except Exception as exc:
+            self.LowCmdRos = None
             self.LowStateRos = None
-            self.get_logger().warn(f"unitree_go.msg.LowState is not available; /inekf_lowstate disabled: {exc}")
+            self.SportModeStateRos = None
+            raise RuntimeError(f"unitree_go ROS messages are required in real mode: {exc}") from exc
 
     def _initialize_ros_io(self) -> None:
         self.create_subscription(Odometry, self.get_parameter("kalman_odom_topic").value, self._kalman_odom_callback, 10)
@@ -306,39 +300,43 @@ class RealPolicyNode(Node):
         self.tf_listener = tf2_ros.TransformListener(
             self.tf_buffer, self, spin_thread=False
         )
-        self.lowstate_publisher = None
-        if self.LowStateRos is not None:
-            self.lowstate_publisher = self.create_publisher(
-                self.LowStateRos,
-                self.get_parameter("inekf_lowstate_topic").value,
-                10,
-            )
-            self.create_timer(float(self.get_parameter("lowstate_publish_period_s").value), self._publish_lowstate)
+        self.lowstate_publisher = self.create_publisher(
+            self.LowStateRos,
+            self.get_parameter("inekf_lowstate_topic").value,
+            10,
+        )
 
-    def _initialize_dds(self) -> None:
-        domain_id = int(self.get_parameter("dds_domain_id").value)
-        net = str(self.get_parameter("network_interface").value).strip()
-        if net:
-            self.ChannelFactoryInitialize(domain_id, net)
-        else:
-            self.ChannelFactoryInitialize(domain_id)
-        self.get_logger().info("2] --> LE CHANNELFACTORY A ETE CREE")
+    def _initialize_fake_cube_publisher(self) -> None:
+        self.fake_cube_state_publisher = self.create_publisher(
+            Odometry,
+            self.get_parameter("cube_state_topic").value,
+            10,
+        )
+        self.fake_cube_marker_publisher = self.create_publisher(
+            Marker,
+            self.get_parameter("cube_marker_topic").value,
+            10,
+        )
+        self.fake_cube_publish_timer = self.create_timer(
+            float(self.get_parameter("fake_cube_publish_period_s").value),
+            self._publish_fake_cube_state,
+        )
 
     def _initialize_controller_state(self) -> None:
-        self.get_logger().info("3] ---> CHARGEMENT DES POLITIQUES HIGH-LEVEL ET LOW-LEVEL")
+        self.get_logger().info("3] ---> Loading high-level and low-level policies")
         high_level_path = self._resolve_policy_path("high_level_policy_path")
         low_level_path = self._resolve_policy_path("low_level_policy_path")
         self.high_level_policy = torch.jit.load(high_level_path).eval()
         self.low_level_policy = torch.jit.load(low_level_path).eval()
 
-        self.defaut_isaac = [0.1, -0.1, 0.1, -0.1, 0.8, 0.8, 1, 1, -1.5, -1.5, -1.5, -1.5]
+        self.default_isaac = [0.1, -0.1, 0.1, -0.1, 0.8, 0.8, 1, 1, -1.5, -1.5, -1.5, -1.5]
         self.base_lin_vel = np.array([0, 0, 0])
         self.cmd = np.zeros(3, dtype=np.float32)
         self.qj = np.zeros(self.config.num_actions, dtype=np.float32)
         self.dqj = np.zeros(self.config.num_actions, dtype=np.float32)
         self.high_level_action = np.zeros(3, dtype=np.float32)
         self.action = np.zeros(self.config.num_actions, dtype=np.float32)
-        self.target_dof_pos = self.defaut_isaac.copy()
+        self.target_dof_pos = self.default_isaac.copy()
         self.high_level_obs = np.zeros(
             int(self.get_parameter("high_level_num_obs").value), dtype=np.float32
         )
@@ -355,6 +353,7 @@ class RealPolicyNode(Node):
         self.goal_xy = np.array(self.get_parameter("goal_xy").value, dtype=np.float32)
         self.goal_radius = float(self.get_parameter("goal_radius").value)
         self._next_high_level_time = -math.inf
+        self._last_high_level_toggle_pressed = False
 
         self.dt = 0.002
         self.startPos = [0.0] * 12
@@ -401,49 +400,48 @@ class RealPolicyNode(Node):
         return path
 
     def _initialize_robot_interfaces(self) -> None:
-        self.get_logger().info("4] ----> INITIALISATION DES CHANNELS")
-        self.lowcmd_publisher_ = self.ChannelPublisher(self.config.lowcmd_topic, self.LowCmdGo)
-        self.lowcmd_publisher_.Init()
-        self.lowstate_subscriber = self.ChannelSubscriber(self.config.lowstate_topic, self.LowStateGo)
-        self.lowstate_subscriber.Init(self._low_state_go_handler, 10)
-        self.sportstate_subscriber = self.ChannelSubscriber(self.get_parameter("sportstate_topic").value, self.SportModeState)
-        self.sportstate_subscriber.Init(self._sport_state_message_handler, 10)
+        self.get_logger().info("4] ----> Initializing ROS 2 Unitree topics")
+        self.lowcmd_publisher_ = self.create_publisher(
+            self.LowCmdRos,
+            self.config.lowcmd_topic,
+            10,
+        )
+        self.lowstate_subscriber = self.create_subscription(
+            self.LowStateRos,
+            self.config.lowstate_topic,
+            self._low_state_go_handler,
+            10,
+        )
+        self.sportstate_subscriber = self.create_subscription(
+            self.SportModeStateRos,
+            self.get_parameter("sportstate_topic").value,
+            self._sport_state_message_handler,
+            10,
+        )
 
-        self.low_cmd = self.LowCmdDefault()
-        self.low_state = self.LowStateDefault()
-        self.wait_for_low_state()
+        self.low_cmd = self.LowCmdRos()
+        self.low_state = self.LowStateRos()
         init_cmd_go(self.low_cmd, weak_motor=self.config.weak_motor)
 
     def init_low_level_mode(self) -> None:
         if not bool(self.get_parameter("auto_switch_to_low_level").value):
             return
 
-        self.sc = self.SportClient()
-        self.sc.SetTimeout(5.0)
-        self.sc.Init()
-        self.msc = self.MotionSwitcherClient()
-        self.msc.SetTimeout(5.0)
-        self.msc.Init()
-
-        status, result = self.msc.CheckMode()
-        while result["name"] and not self._stop_event.is_set():
-            self.sc.StandDown()
-            self.msc.ReleaseMode()
-            self.get_logger().info(
-                "3] ---> LE ROBOT EST EN POSITION ALLONGE ET LE MODE HAUT NIVEAU EST RELACHE -> PASSAGE EN BAS NIVEAU"
-            )
-            status, result = self.msc.CheckMode()
-            time.sleep(1)
+        self.get_logger().warn(
+            "auto_switch_to_low_level is disabled in ROS-topic mode. "
+            "Switch the robot to low-level mode with a separate Unitree tool if needed."
+        )
 
     def wait_for_low_state(self) -> None:
         while self.low_state.tick == 0 and not self._stop_event.is_set():
             time.sleep(self.config.control_dt)
-        self.get_logger().info("         Connecte au robot")
+        self.get_logger().info("         Connected to robot")
 
     def _low_state_go_handler(self, msg) -> None:
         self.low_state = msg
         self.low_state_msg = msg
         self.remote_controller.set(self.low_state.wireless_remote)
+        self.lowstate_publisher.publish(msg)
 
     def _sport_state_message_handler(self, sport_state_msg) -> None:
         self.velocity = sport_state_msg.velocity
@@ -484,6 +482,58 @@ class RealPolicyNode(Node):
         self.cube_pos_xy[:] = self._xy_parameter("fake_cube_position_xy")
         self.cube_lin_vel_xy[:] = self._xy_parameter("fake_cube_velocity_xy")
 
+    def _publish_fake_cube_state(self) -> None:
+        if not self.fake_cube_observation_mode:
+            return
+        self._apply_fake_cube_observation()
+
+        msg = Odometry()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = str(self.get_parameter("policy_world_frame").value)
+        msg.child_frame_id = "cube"
+
+        msg.pose.pose.position.x = float(self.cube_pos_xy[0])
+        msg.pose.pose.position.y = float(self.cube_pos_xy[1])
+        msg.pose.pose.position.z = 0.0
+        msg.pose.covariance[0] = 0.01
+        msg.pose.covariance[7] = 0.01
+
+        msg.twist.twist.linear.x = float(self.cube_lin_vel_xy[0])
+        msg.twist.twist.linear.y = float(self.cube_lin_vel_xy[1])
+        msg.twist.covariance[0] = 0.04
+        msg.twist.covariance[7] = 0.04
+
+        self.fake_cube_state_publisher.publish(msg)
+        self._publish_fake_cube_marker(msg.header.stamp, msg.header.frame_id)
+
+    def _publish_fake_cube_marker(self, stamp, frame_id: str) -> None:
+        dimensions = list(self.get_parameter("cube_dimensions").value)
+        if len(dimensions) != 3:
+            raise ValueError("cube_dimensions must contain exactly three values [x, y, z]")
+
+        marker = Marker()
+        marker.header.stamp = stamp
+        marker.header.frame_id = frame_id
+        marker.ns = "cube_state"
+        marker.id = 0
+        marker.type = Marker.CUBE
+        marker.action = Marker.ADD
+        marker.pose.position.x = float(self.cube_pos_xy[0])
+        marker.pose.position.y = float(self.cube_pos_xy[1])
+        marker.pose.position.z = float(dimensions[2]) / 2.0
+        marker.pose.orientation.x = 0.0
+        marker.pose.orientation.y = 0.0
+        marker.pose.orientation.z = 0.0
+        marker.pose.orientation.w = 1.0
+        marker.scale.x = float(dimensions[0])
+        marker.scale.y = float(dimensions[1])
+        marker.scale.z = float(dimensions[2])
+        marker.color.r = 1.0
+        marker.color.g = 1.0
+        marker.color.b = 0.0
+        marker.color.a = 0.6
+        self.fake_cube_marker_publisher.publish(marker)
+
     def _xy_parameter(self, name: str) -> np.ndarray:
         values = list(self.get_parameter(name).value)
         if len(values) != 2:
@@ -493,9 +543,7 @@ class RealPolicyNode(Node):
     def _publish_lowstate(self) -> None:
         if self.lowstate_publisher is None or self.low_state_msg is None:
             return
-        ros_msg = self.LowStateRos()
-        copy_low_state_dds_to_ros(self.low_state_msg, ros_msg)
-        self.lowstate_publisher.publish(ros_msg)
+        self.lowstate_publisher.publish(self.low_state_msg)
 
     def _apply_torque_limits(self, cmd) -> None:
         limits = getattr(self.config, "torque_limits", None)
@@ -505,17 +553,83 @@ class RealPolicyNode(Node):
             if i >= len(cmd.motor_cmd):
                 break
             limit = abs(float(limit))
-            if limit <= 0.0:
-                cmd.motor_cmd[i].tau = 0.0
-            else:
-                cmd.motor_cmd[i].tau = float(np.clip(cmd.motor_cmd[i].tau, -limit, limit))
+            self._limit_motor_command_torque(cmd.motor_cmd[i], i, limit)
+
+    def _limit_motor_command_torque(self, motor_cmd, motor_index: int, limit: float) -> None:
+        if self.low_state is None or motor_index >= len(self.low_state.motor_state):
+            set_motor_cmd_torque(motor_cmd, np.clip(motor_cmd.tau, -limit, limit))
+            return
+
+        motor_state = self.low_state.motor_state[motor_index]
+        q_actual = float(motor_state.q)
+        dq_actual = float(motor_state.dq)
+        q_target = float(motor_cmd.q)
+        dq_target = float(getattr(motor_cmd, "dq", getattr(motor_cmd, "qd", 0.0)))
+        kp = float(motor_cmd.kp)
+        kd = float(motor_cmd.kd)
+        tau = float(motor_cmd.tau)
+
+        estimated_torque = (
+            kp * (q_target - q_actual)
+            + kd * (dq_target - dq_actual)
+            + tau
+        )
+        clamped_torque = float(np.clip(estimated_torque, -limit, limit))
+        if clamped_torque == estimated_torque:
+            return
+
+        # Prefer changing q because this node uses position control. If kp is
+        # zero, fall back to dq, then tau.
+        if abs(kp) > 1e-6:
+            q_limited = q_actual + (
+                clamped_torque - kd * (dq_target - dq_actual) - tau
+            ) / kp
+            set_motor_cmd_position(motor_cmd, q_limited)
+        elif abs(kd) > 1e-6:
+            dq_limited = dq_actual + (clamped_torque - tau) / kd
+            set_motor_cmd_velocity(motor_cmd, dq_limited)
+        else:
+            set_motor_cmd_torque(motor_cmd, clamped_torque)
 
     def send_cmd(self, cmd) -> None:
         if not self.commands_enabled:
             return
         self._apply_torque_limits(cmd)
-        cmd.crc = self.CRC().Crc(cmd)
-        self.lowcmd_publisher_.Write(cmd)
+        cmd.crc = compute_go2_lowcmd_crc(cmd)
+        self.lowcmd_publisher_.publish(cmd)
+
+    def _log_policy_motor_outputs(self) -> None:
+        log_every = int(self.get_parameter("motor_log_every_n_steps").value)
+        if log_every <= 0 or self.counter % log_every != 0:
+            return
+
+        motor_indices = self.config.leg_joint2motor_idx
+        q_targets = np.array(
+            [self.low_cmd.motor_cmd[motor_idx].q for motor_idx in motor_indices],
+            dtype=np.float32,
+        )
+        kp_values = np.array(
+            [self.low_cmd.motor_cmd[motor_idx].kp for motor_idx in motor_indices],
+            dtype=np.float32,
+        )
+        kd_values = np.array(
+            [self.low_cmd.motor_cmd[motor_idx].kd for motor_idx in motor_indices],
+            dtype=np.float32,
+        )
+        tau_values = np.array(
+            [self.low_cmd.motor_cmd[motor_idx].tau for motor_idx in motor_indices],
+            dtype=np.float32,
+        )
+        self.get_logger().info(
+            "Policy motor output "
+            f"step={self.counter} "
+            f"cmd={np.array2string(self.cmd, precision=3, suppress_small=True)} "
+            f"action={np.array2string(self.action, precision=3, suppress_small=True)} "
+            f"q_target={np.array2string(q_targets, precision=3, suppress_small=True)} "
+            # f"kp={np.array2string(kp_values, precision=2, suppress_small=True)} "
+            # f"kd={np.array2string(kd_values, precision=2, suppress_small=True)} "
+            # f"tau={np.array2string(tau_values, precision=3, suppress_small=True)}"
+        )
 
     def run_fake_policy_step(self):
         observation_min = float(self.get_parameter("fake_observation_min").value)
@@ -573,9 +687,9 @@ class RealPolicyNode(Node):
         return self.obs
 
     def zero_torque_state(self) -> None:
-        self.get_logger().info("5] -----> LE ZERO TORQUE STATE EST EN COURS")
+        self.get_logger().info("5] -----> Zero-torque state is active")
         self.get_logger().info("          ##################################################")
-        self.get_logger().info("          # EN ATTENTE DU BOUTON START POUR LEVER LE ROBOT #")
+        self.get_logger().info("          # Waiting for START button to stand up robot     #")
         self.get_logger().info("          ##################################################")
         while (
             bool(self.get_parameter("wait_for_start_button").value)
@@ -587,7 +701,7 @@ class RealPolicyNode(Node):
             time.sleep(self.config.control_dt)
 
     def move_to_default_pos(self) -> None:
-        self.get_logger().info("6] ------> LE ROBOT SE DEPLACE VERS LA DEFAULT POSE")
+        self.get_logger().info("6] ------> Robot is moving to the default pose")
         done = False
 
         if self.firstRun:
@@ -602,50 +716,60 @@ class RealPolicyNode(Node):
             self.percent_1 = min(self.percent_1, 1)
             if self.percent_1 < 1:
                 for i in range(12):
-                    self.low_cmd.motor_cmd[i].q = (1 - self.percent_1) * self.startPos[i] + self.percent_1 * self._targetPos_1[i]
+                    set_motor_cmd_position(
+                        self.low_cmd.motor_cmd[i],
+                        (1 - self.percent_1) * self.startPos[i]
+                        + self.percent_1 * self._targetPos_1[i],
+                    )
                     set_motor_cmd_velocity(self.low_cmd.motor_cmd[i], 0)
-                    self.low_cmd.motor_cmd[i].kp = 60
-                    self.low_cmd.motor_cmd[i].kd = 5
-                    self.low_cmd.motor_cmd[i].tau = 0
+                    set_motor_cmd_gains(self.low_cmd.motor_cmd[i], 60.0, 5.0)
+                    set_motor_cmd_torque(self.low_cmd.motor_cmd[i], 0.0)
 
             if self.percent_1 == 1 and self.percent_2 <= 1:
                 self.percent_2 += 1.0 / self.duration_2
                 self.percent_2 = min(self.percent_2, 1)
                 for i in range(12):
-                    self.low_cmd.motor_cmd[i].q = (1 - self.percent_2) * self._targetPos_1[i] + self.percent_2 * self._targetPos_2[i]
+                    set_motor_cmd_position(
+                        self.low_cmd.motor_cmd[i],
+                        (1 - self.percent_2) * self._targetPos_1[i]
+                        + self.percent_2 * self._targetPos_2[i],
+                    )
                     set_motor_cmd_velocity(self.low_cmd.motor_cmd[i], 0)
-                    self.low_cmd.motor_cmd[i].kp = 60
-                    self.low_cmd.motor_cmd[i].kd = 5
-                    self.low_cmd.motor_cmd[i].tau = 0
+                    set_motor_cmd_gains(self.low_cmd.motor_cmd[i], 60.0, 5.0)
+                    set_motor_cmd_torque(self.low_cmd.motor_cmd[i], 0.0)
 
             if self.percent_1 == 1 and self.percent_2 == 1 and self.percent_3 < 1:
                 self.percent_3 += 1.0 / self.duration_3
                 self.percent_3 = min(self.percent_3, 1)
                 for i in range(12):
-                    self.low_cmd.motor_cmd[i].q = self._targetPos_2[i]
+                    set_motor_cmd_position(
+                        self.low_cmd.motor_cmd[i], self._targetPos_2[i]
+                    )
                     set_motor_cmd_velocity(self.low_cmd.motor_cmd[i], 0)
-                    self.low_cmd.motor_cmd[i].kp = 60
-                    self.low_cmd.motor_cmd[i].kd = 5
-                    self.low_cmd.motor_cmd[i].tau = 0
+                    set_motor_cmd_gains(self.low_cmd.motor_cmd[i], 60.0, 5.0)
+                    set_motor_cmd_torque(self.low_cmd.motor_cmd[i], 0.0)
 
             if self.percent_1 == 1 and self.percent_2 == 1 and self.percent_3 == 1 and self.percent_4 <= 1:
                 self.percent_4 += 1.0 / self.duration_4
                 self.percent_4 = min(self.percent_4, 1)
                 for i in range(12):
-                    self.low_cmd.motor_cmd[i].q = (1 - self.percent_4) * self._targetPos_2[i] + self.percent_4 * self._targetPos_3[i]
+                    set_motor_cmd_position(
+                        self.low_cmd.motor_cmd[i],
+                        (1 - self.percent_4) * self._targetPos_2[i]
+                        + self.percent_4 * self._targetPos_3[i],
+                    )
                     set_motor_cmd_velocity(self.low_cmd.motor_cmd[i], 0)
-                    self.low_cmd.motor_cmd[i].kp = 60
-                    self.low_cmd.motor_cmd[i].kd = 5
-                    self.low_cmd.motor_cmd[i].tau = 0
+                    set_motor_cmd_gains(self.low_cmd.motor_cmd[i], 60.0, 5.0)
+                    set_motor_cmd_torque(self.low_cmd.motor_cmd[i], 0.0)
 
             self.send_cmd(self.low_cmd)
             if self.percent_4 == 1.0 or self.count == 2500000000:
                 done = True
             time.sleep(float(self.get_parameter("startup_sleep_s").value))
 
-        self.get_logger().info("7] -------> LE ROBOT SE MAINTIENT DEBOUT")
+        self.get_logger().info("7] -------> Robot is standing")
         self.get_logger().info("            ###########################################")
-        self.get_logger().info("            # APPUYEZ SUR 'A' POUR DEMARRER LE MODELE #")
+        self.get_logger().info("            # Press 'A' to start the model            #")
         self.get_logger().info("            ###########################################")
 
         while (
@@ -655,11 +779,10 @@ class RealPolicyNode(Node):
         ):
             default = self.config.default_angles
             for i in range(12):
-                self.low_cmd.motor_cmd[i].q = default[i]
+                set_motor_cmd_position(self.low_cmd.motor_cmd[i], default[i])
                 set_motor_cmd_velocity(self.low_cmd.motor_cmd[i], 0)
-                self.low_cmd.motor_cmd[i].kp = 60
-                self.low_cmd.motor_cmd[i].kd = 5
-                self.low_cmd.motor_cmd[i].tau = 0
+                set_motor_cmd_gains(self.low_cmd.motor_cmd[i], 60.0, 5.0)
+                set_motor_cmd_torque(self.low_cmd.motor_cmd[i], 0.0)
                 self.send_cmd(self.low_cmd)
                 time.sleep(0.002)
 
@@ -671,19 +794,22 @@ class RealPolicyNode(Node):
         while percent != 1 and not self._stop_event.is_set():
             percent += 1.0 / 300
             percent = min(percent, 1)
-            couche = [0, 1.36, -2.65, 0, 1.36, -2.65, -0.2, 1.36, -2.65, 0.2, 1.36, -2.65]
+            lying_pose = [0, 1.36, -2.65, 0, 1.36, -2.65, -0.2, 1.36, -2.65, 0.2, 1.36, -2.65]
             for i in range(12):
-                self.low_cmd.motor_cmd[i].q = (1 - percent) * pos_init[i] + percent * couche[i]
+                set_motor_cmd_position(
+                    self.low_cmd.motor_cmd[i],
+                    (1 - percent) * pos_init[i] + percent * lying_pose[i],
+                )
                 set_motor_cmd_velocity(self.low_cmd.motor_cmd[i], 0)
-                self.low_cmd.motor_cmd[i].kp = 60
-                self.low_cmd.motor_cmd[i].kd = 5
-                self.low_cmd.motor_cmd[i].tau = 0
+                set_motor_cmd_gains(self.low_cmd.motor_cmd[i], 60.0, 5.0)
+                set_motor_cmd_torque(self.low_cmd.motor_cmd[i], 0.0)
                 self.send_cmd(self.low_cmd)
             time.sleep(0.002)
-        self.get_logger().info("9] ---------> LE ROBOT EST ALLONGE")
+        self.get_logger().info("9] ---------> Robot is lying down")
 
     def run_policy_step(self):
         self.counter += 1
+        self._update_high_level_toggle_from_remote()
         ang_vel = np.asarray(self.low_state.imu_state.gyroscope, dtype=np.float32)
         quat = self.low_state.imu_state.quaternion
         gravity_orientation = get_gravity_orientation(quat)
@@ -693,8 +819,8 @@ class RealPolicyNode(Node):
             self.dqj[i] = self.low_state.motor_state[self.config.leg_joint2motor_idx[i]].dq
         qj_obs = self.qj.copy()
         dqj_obs = self.dqj.copy()
-        defaut_joint = [0.1, -0.1, 0.1, -0.1, 0.8, 0.8, 1, 1, -1.5, -1.5, -1.5, -1.5]
-        qj_obs = qj_obs - defaut_joint
+        default_joint = [0.1, -0.1, 0.1, -0.1, 0.8, 0.8, 1, 1, -1.5, -1.5, -1.5, -1.5]
+        qj_obs = qj_obs - default_joint
 
         if self.use_high_level_policy:
             now = time.monotonic()
@@ -725,7 +851,11 @@ class RealPolicyNode(Node):
                     while self._next_high_level_time <= now:
                         self._next_high_level_time += high_period
 
-            self.cmd[:] = self.high_level_action
+            self.cmd[:] = np.clip(
+                self.high_level_action[:3],
+                -self.config.max_cmd,
+                self.config.max_cmd,
+            )
         else:
             self.cmd[:] = self._joystick_velocity_command()
 
@@ -755,15 +885,21 @@ class RealPolicyNode(Node):
                 f"Low-level policy returned {self.action.size} actions; expected {self.config.num_actions}"
             )
 
-        target_dof_pos = self.action * self.config.action_scale + defaut_joint
+        target_dof_pos = self.action * self.config.action_scale + default_joint
         for i in range(len(self.config.leg_joint2motor_idx)):
             motor_idx = self.config.leg_joint2motor_idx[i]
-            self.low_cmd.motor_cmd[motor_idx].q = target_dof_pos[i]
+            set_motor_cmd_position(
+                self.low_cmd.motor_cmd[motor_idx], target_dof_pos[i]
+            )
             set_motor_cmd_velocity(self.low_cmd.motor_cmd[motor_idx], 0)
-            self.low_cmd.motor_cmd[motor_idx].kp = self.config.kps[i]
-            self.low_cmd.motor_cmd[motor_idx].kd = self.config.kds[i]
-            self.low_cmd.motor_cmd[motor_idx].tau = 0
+            set_motor_cmd_gains(
+                self.low_cmd.motor_cmd[motor_idx],
+                self.config.kps[i],
+                self.config.kds[i],
+            )
+            set_motor_cmd_torque(self.low_cmd.motor_cmd[motor_idx], 0.0)
         self.send_cmd(self.low_cmd)
+        self._log_policy_motor_outputs()
 
         self.L_base_vel_cmd_input_1.append(self.cmd[0])
         self.L_base_vel_cmd_input_2.append(self.cmd[1])
@@ -792,6 +928,58 @@ class RealPolicyNode(Node):
         )
         command *= self.config.cmd_scale
         return np.clip(command, -self.config.max_cmd, self.config.max_cmd)
+
+    def _update_high_level_toggle_from_remote(self) -> None:
+        button_name = str(self.get_parameter("high_level_toggle_button").value)
+        button_index = self._remote_button_index(button_name)
+        pressed = self.remote_controller.button[button_index] == 1
+        if pressed and not self._last_high_level_toggle_pressed:
+            if not bool(self.get_parameter("use_high_level_policy").value):
+                self.use_high_level_policy = False
+                self._next_high_level_time = -math.inf
+                self.get_logger().info(
+                    f"Remote {button_name.upper()} pressed, but high-level policy is disabled by parameter"
+                )
+                self._last_high_level_toggle_pressed = pressed
+                return
+            self.use_high_level_policy = not self.use_high_level_policy
+            self._next_high_level_time = -math.inf
+            source = (
+                "PushCube high-level policy"
+                if self.use_high_level_policy
+                else "joystick"
+            )
+            self.get_logger().info(
+                f"Remote {button_name.upper()} pressed: low-level velocity command source is now {source}"
+            )
+        self._last_high_level_toggle_pressed = pressed
+
+    @staticmethod
+    def _remote_button_index(button_name: str) -> int:
+        aliases = {
+            "r1": KeyMap.R1,
+            "l1": KeyMap.L1,
+            "start": KeyMap.start,
+            "select": KeyMap.select,
+            "back": KeyMap.select,
+            "r2": KeyMap.R2,
+            "l2": KeyMap.L2,
+            "f1": KeyMap.F1,
+            "f2": KeyMap.F2,
+            "a": KeyMap.A,
+            "b": KeyMap.B,
+            "x": KeyMap.X,
+            "y": KeyMap.Y,
+            "up": KeyMap.up,
+            "right": KeyMap.right,
+            "down": KeyMap.down,
+            "left": KeyMap.left,
+        }
+        key = button_name.strip().lower()
+        if key not in aliases:
+            valid = ", ".join(sorted(aliases))
+            raise ValueError(f"Unknown high-level toggle button '{button_name}'. Valid buttons: {valid}")
+        return aliases[key]
 
     def _build_high_level_observation(
         self, ang_vel, gravity_orientation, qj_obs, dqj_obs
@@ -860,11 +1048,12 @@ class RealPolicyNode(Node):
     def _run_deploy_sequence(self) -> None:
         try:
             self.init_low_level_mode()
+            self.wait_for_low_state()
             self.zero_torque_state()
             self.move_to_default_pos()
-            self.get_logger().info("8] --------> LE MODELE EST LANCE")
+            self.get_logger().info("8] --------> Model is running")
             self.get_logger().info("             ###############################################")
-            self.get_logger().info("             # APPUYEZ SUR 'SELECT' POUR ARRETER LE MODELE #")
+            self.get_logger().info("             # Press 'SELECT' to stop the model            #")
             self.get_logger().info("             ###############################################")
 
             time_ms = 0
@@ -900,7 +1089,7 @@ class RealPolicyNode(Node):
     def _plot_analysis(self) -> None:
         import matplotlib.pyplot as plt
 
-        self.get_logger().info("10] ----------> VISUALISATION DES DONNEES EN COURS")
+        self.get_logger().info("10] ----------> Visualizing data")
         fig = plt.figure(figsize=(24, 24))
         gs = fig.add_gridspec(2, 2)
         ax1 = fig.add_subplot(gs[0, 0])
@@ -944,9 +1133,17 @@ def main(args=None) -> None:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
+    except RuntimeError as exc:
+        if "Unable to convert call argument to Python object" not in str(exc):
+            raise
+        if rclpy.ok():
+            node.get_logger().warn(
+                "Ignoring ROS message conversion error during shutdown."
+            )
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

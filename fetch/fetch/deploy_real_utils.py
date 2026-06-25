@@ -98,20 +98,18 @@ def add_unitree_sdk_paths(extra_paths: Sequence[str] | None = None) -> None:
 
 def create_zero_cmd(cmd) -> None:
     for motor_cmd in cmd.motor_cmd:
-        motor_cmd.q = 0
+        set_motor_cmd_position(motor_cmd, 0.0)
         set_motor_cmd_velocity(motor_cmd, 0)
-        motor_cmd.kp = 0
-        motor_cmd.kd = 0
-        motor_cmd.tau = 0
+        set_motor_cmd_gains(motor_cmd, 0.0, 0.0)
+        set_motor_cmd_torque(motor_cmd, 0.0)
 
 
 def create_damping_cmd(cmd) -> None:
     for motor_cmd in cmd.motor_cmd:
-        motor_cmd.q = 0
+        set_motor_cmd_position(motor_cmd, 0.0)
         set_motor_cmd_velocity(motor_cmd, 0)
-        motor_cmd.kp = 0
-        motor_cmd.kd = 8
-        motor_cmd.tau = 0
+        set_motor_cmd_gains(motor_cmd, 0.0, 8.0)
+        set_motor_cmd_torque(motor_cmd, 0.0)
 
 
 def init_cmd_go(cmd, weak_motor: Sequence[int] | None = None) -> None:
@@ -124,18 +122,87 @@ def init_cmd_go(cmd, weak_motor: Sequence[int] | None = None) -> None:
     vel_stop = 16000.0
     for i, motor_cmd in enumerate(cmd.motor_cmd):
         motor_cmd.mode = 1 if i in weak_motor else 0x0A
-        motor_cmd.q = pos_stop
+        set_motor_cmd_position(motor_cmd, pos_stop)
         set_motor_cmd_velocity(motor_cmd, vel_stop)
-        motor_cmd.kp = 0
-        motor_cmd.kd = 0
-        motor_cmd.tau = 0
+        set_motor_cmd_gains(motor_cmd, 0.0, 0.0)
+        set_motor_cmd_torque(motor_cmd, 0.0)
+
+
+def compute_go2_lowcmd_crc(cmd) -> int:
+    pack_fmt = "<4B4IH2x" + "B3x5f3I" * 20 + "4B" + "55Bx2I"
+    data = []
+    data.extend(cmd.head)
+    data.append(cmd.level_flag)
+    data.append(cmd.frame_reserve)
+    data.extend(cmd.sn)
+    data.extend(cmd.version)
+    data.append(cmd.bandwidth)
+
+    for motor_cmd in cmd.motor_cmd:
+        data.append(motor_cmd.mode)
+        data.append(motor_cmd.q)
+        data.append(motor_cmd.dq)
+        data.append(motor_cmd.tau)
+        data.append(motor_cmd.kp)
+        data.append(motor_cmd.kd)
+        data.extend(motor_cmd.reserve)
+
+    data.append(cmd.bms_cmd.off)
+    data.extend(cmd.bms_cmd.reserve)
+    data.extend(cmd.wireless_remote)
+    data.extend(cmd.led)
+    data.extend(cmd.fan)
+    data.append(cmd.gpio)
+    data.append(cmd.reserve)
+    data.append(cmd.crc)
+
+    packed = struct.pack(pack_fmt, *data)
+    words = []
+    for i in range((len(packed) >> 2) - 1):
+        words.append(
+            (packed[i * 4 + 3] << 24)
+            | (packed[i * 4 + 2] << 16)
+            | (packed[i * 4 + 1] << 8)
+            | packed[i * 4]
+        )
+    return _crc32_words(words)
+
+
+def _crc32_words(words: Sequence[int]) -> int:
+    crc = 0xFFFFFFFF
+    polynomial = 0x04C11DB7
+    for word in words:
+        bit = 1 << 31
+        for _ in range(32):
+            if crc & 0x80000000:
+                crc = ((crc << 1) & 0xFFFFFFFF) ^ polynomial
+            else:
+                crc = (crc << 1) & 0xFFFFFFFF
+            if word & bit:
+                crc ^= polynomial
+            bit >>= 1
+    return crc & 0xFFFFFFFF
+
+
+def set_motor_cmd_position(motor_cmd, value: float) -> None:
+    motor_cmd.q = float(value)
 
 
 def set_motor_cmd_velocity(motor_cmd, value: float) -> None:
+    value = float(value)
     if hasattr(motor_cmd, "dq"):
         motor_cmd.dq = value
     else:
         motor_cmd.qd = value
+
+
+def set_motor_cmd_gains(motor_cmd, kp: float, kd: float) -> None:
+    motor_cmd.kp = float(kp)
+    motor_cmd.kd = float(kd)
+
+
+def set_motor_cmd_torque(motor_cmd, value: float) -> None:
+    motor_cmd.tau = float(value)
 
 
 def get_gravity_orientation(quaternion) -> np.ndarray:

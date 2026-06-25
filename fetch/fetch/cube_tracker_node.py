@@ -208,7 +208,7 @@ class CubeTrackerNode(Node):
 
         self.declare_parameter('mask_erode_iterations', 1)
         self.declare_parameter('mask_erode_kernel_size', 5)
-        self.declare_parameter('central_mask_keep_ratio', 0.5)
+        self.declare_parameter('central_mask_keep_ratio', 0.3)
         self.declare_parameter('max_pose_jump_m', 0.30)
         self.declare_parameter('max_pose_speed_mps', 1.0)
 
@@ -428,7 +428,7 @@ class CubeTrackerNode(Node):
 
         raw_pos_xyz = (float(raw_pos_array[0]), float(raw_pos_array[1]), float(raw_pos_array[2]))
         filtered_pos_xyz = self._low_pass_cube_position(raw_pos_xyz, now_s=now_filter_s)
-                pos_xyz = tuple(
+        pos_xyz = tuple(
             float(filtered_pos_xyz[i] + self.cube_position_offset_xyz[i]) for i in range(3)
         )
         pos_xy = pos_xyz[:2]
@@ -627,26 +627,26 @@ class CubeTrackerNode(Node):
         return mask
 
     def _erode_mask_for_depth(self, mask: np.ndarray) -> np.ndarray:
-    if self.mask_erode_iterations <= 0:
-        return mask
+        if self.mask_erode_iterations <= 0:
+            return mask
 
-    kernel_size = max(1, int(self.mask_erode_kernel_size))
-    if kernel_size % 2 == 0:
-        kernel_size += 1
+        kernel_size = max(1, int(self.mask_erode_kernel_size))
+        if kernel_size % 2 == 0:
+            kernel_size += 1
 
-    kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
-    eroded = cv2.erode(
-        mask.astype(np.uint8),
-        kernel,
-        iterations=self.mask_erode_iterations,
-    ).astype(bool)
+        kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
+        eroded = cv2.erode(
+            mask.astype(np.uint8),
+            kernel,
+            iterations=self.mask_erode_iterations,
+        ).astype(bool)
 
-    # If the cube is far away, erosion may remove too many pixels.
-    # In that case, keep the original mask.
-    if int(eroded.sum()) < self.min_inlier_points:
-        return mask
+        # If the cube is far away, erosion may remove too many pixels.
+        # In that case, keep the original mask.
+        if int(eroded.sum()) < self.min_inlier_points:
+            return mask
 
-    return eroded
+        return eroded
 
 
     def _keep_central_mask_pixels(

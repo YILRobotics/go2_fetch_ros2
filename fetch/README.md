@@ -3,7 +3,7 @@
 ROS 2 Humble package with three nodes for Go2 push-cube deployment:
 
 1. `cube_tracker_node`: Realsense + YOLOE segmentation + pointcloud filtering, publishes cube planar state.
-2. `policy_node`: ROS 2 port of `Deploy_SimToReal_RL_Go2/deploy_real`, including Unitree DDS control and Kalman odometry input.
+2. `policy_node`: ROS 2 port of `Deploy_SimToReal_RL_Go2/deploy_real`, using Unitree ROS 2 topics and Kalman odometry input.
 3. `state_machine_node`: Controls modes (`standup -> policy -> search`) and handles cube-loss recovery.
 
 ## Architecture
@@ -24,11 +24,12 @@ ROS 2 Humble package with three nodes for Go2 push-cube deployment:
 - `policy_node`
   - Subscribes:
     - `/odometry/filtered` (`nav_msgs/Odometry`) for Kalman linear velocity
-    - Unitree DDS `rt/lowstate` and `rt/sportmodestate`
+    - `/lf/lowstate` (`unitree_go/msg/LowState`)
+    - `/sportmodestate` (`unitree_go/msg/SportModeState`)
   - Loads the original `policy_rough.pt` TorchScript policy.
   - Preserves the remote sequence: START to stand, A to run, SELECT to lower the robot.
   - Publishes:
-    - Unitree DDS `rt/lowcmd`
+    - `/lowcmd` (`unitree_go/msg/LowCmd`)
     - `/inekf_lowstate` (`unitree_go/msg/LowState`) for the estimator
 
 - `state_machine_node`
@@ -53,8 +54,7 @@ All main parameters are in:
 Important fields:
 
 - model path (`policy_base_dir`, `policy_path`)
-- Unitree DDS setup (`network_interface`, `dds_domain_id`)
-- Unitree topics (`lowstate_topic`, `lowcmd_topic`, `sportstate_topic`)
+- Unitree ROS 2 topics (`lowstate_topic`, `lowcmd_topic`, `sportstate_topic`)
 - safe policy test mode (`fake_observations_mode`, `send_commands`)
 - runtime velocity-command source (`use_high_level_policy`)
 - startup controls (`wait_for_start_button`, `wait_for_a_button`)
@@ -261,11 +261,80 @@ ros2 launch fetch fetch_bringup.launch.py \
   params_file:=/absolute/path/to/your_params.yaml
 ```
 
-Run random fake observations without connecting to DDS or sending robot commands:
+Run random fake observations without sending robot commands:
 
 ```bash
 ros2 launch fetch policy_test.launch.py \
   fake_observations_mode:=true
+```
+
+### Low-Level Mode Switch
+
+`policy_node` uses ROS 2 `unitree_go` topics for command and state I/O. Do not
+initialize `unitree_sdk2py` DDS inside the same Python process as `rclpy`; the
+two CycloneDDS users can conflict during topic creation.
+
+Because of that, `policy_node` does not call `MotionSwitcherClient` directly.
+If the robot is still in a high-level Unitree mode, release that mode in a
+separate terminal before launching the policy:
+
+```bash
+conda activate env_deploy
+cd ~/fetch_ws
+
+python src/go2_fetch_ros2/fetch/fetch/switch_to_low_level.py --interface enP8p1s0
+```
+
+Then launch the policy in another command:
+
+```bash
+ros2 launch fetch policy_odom.launch.py
+```
+
+In simple terms: the script above puts the robot down, releases the built-in
+Unitree high-level controller, then exits. The ROS policy node can then publish
+low-level motor commands on `/lowcmd`.
+
+### Restore High-Level Mode
+
+After stopping `policy_node`, switch the robot back to a Unitree high-level mode
+from a separate terminal:
+
+```bash
+conda activate env_deploy
+cd ~/fetch_ws
+
+python src/go2_fetch_ros2/fetch/fetch/restore_high_level.py --interface enP8p1s0
+```
+
+Use this after `Ctrl+C` stops the policy launch. For Go2, the default mode is
+`ai`. To request a different mode:
+
+```bash
+python src/go2_fetch_ros2/fetch/fetch/restore_high_level.py --interface enP8p1s0 --mode normal
+```
+
+If the robot is lying down and should stand after switching back, add
+`--stand-up`. The script only calls `RecoveryStand()` if the mode switch
+succeeds:
+
+```bash
+python src/go2_fetch_ros2/fetch/fetch/restore_high_level.py --interface enP8p1s0 --stand-up
+```
+
+If `SelectMode` fails but you still want to try `RecoveryStand()`, add
+`--force-stand-up`:
+
+```bash
+python src/go2_fetch_ros2/fetch/fetch/restore_high_level.py --interface enP8p1s0 --stand-up --force-stand-up
+```
+
+After the next package build, the same helpers are also available as ROS package
+commands:
+
+```bash
+ros2 run fetch switch_to_low_level --interface enP8p1s0
+ros2 run fetch restore_high_level --interface enP8p1s0 --stand-up
 ```
 
 ## Runtime Commands
@@ -311,5 +380,5 @@ skips DDS and TF setup, and disables robot command output.
 ## Notes
 
 - `ultralytics`, `torch`, `opencv`, and `cv_bridge` are required for tracker/policy inference.
-- The Unitree SDK Python package is required for DDS command/state communication.
-- `unitree_go` ROS messages are required only for publishing `/inekf_lowstate`.
+- The Unitree SDK Python package is required only for separate mode-switching tools, not inside `policy_node`.
+- `unitree_go` ROS messages are required for `/lowcmd`, `/lf/lowstate`, `/sportmodestate`, and `/inekf_lowstate`.

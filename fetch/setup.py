@@ -28,6 +28,8 @@ setup(
             'policy_node = fetch.policy_node:main',
             'state_machine_node = fetch.state_machine_node:main',
             'dummy_image_pointcloud_publisher_node = fetch.dummy_image_pointcloud_publisher_node:main',
+            'switch_to_low_level = fetch.switch_to_low_level:main',
+            'restore_high_level = fetch.restore_high_level:main',
         ],
     },
 )

@@ -14,7 +14,8 @@ cube_tracker_node:
 
     # YOLO model path.
     # model_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/yoloe-26l-seg_box.onnx
-    model_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/yoloe-26s-seg.pt
+    # model_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/yoloe-26s-seg.pt
+    model_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/yoloe-26s-seg_box.engine
     # model_path: /weak_motorhome/ferdinand/unitree/go2_fetch_ros2/fetch/models/yoloe-26l-seg_ball_round_object_sphere_round.onnx
     # For YOLOE .pt open-vocabulary models, these are passed to model.set_classes(...).
     # For exported .onnx models, prompts/classes are normally baked into the model.
@@ -25,21 +26,20 @@ cube_tracker_node:
     # Tracker throughput cap (timer frequency in Hz).
     processing_rate_hz: 25.0
     # Intermediate pipeline log throttle (set 0 to disable extra stage logs).
-    pipeline_log_rate_hz: 5.0
+    pipeline_log_rate_hz: 2.0
 
     # Optional HSV pre-mask before YOLO (keeps green/blue regions only).
     enable_hsv_pre_mask: false
     # Publish the exact image sent to YOLO after optional HSV masking.
-    publish_pre_yolo_image: true
+    publish_pre_yolo_image: false
     # HSV bounds for green and blue masks: [H, S, V] in OpenCV ranges.
     hsv_green_lower: [35, 40, 40]
     hsv_green_upper: [90, 255, 255]
     hsv_blue_lower: [90, 40, 40]
     hsv_blue_upper: [135, 255, 255]
 
-
     # Max sampled mask pixels used for point cloud centroiding.
-    max_mask_samples: 500
+    max_mask_samples: 250
     # Minimum valid 3D points required after filtering.
     min_inlier_points: 10
     # Accepted depth range in meters.
@@ -52,7 +52,7 @@ cube_tracker_node:
     # Time window used for velocity fitting.
     velocity_window_s: 0.6
     # First-order low-pass cutoff for published cube XYZ state; <= 0 disables it.
-    cube_state_low_pass_cutoff_hz: 4.0
+    cube_state_low_pass_cutoff_hz: 6.0
     # Physical RViz marker dimensions [x, y, z] in meters.
     cube_dimensions: [0.16, 0.16, 0.16]
     # Offset added to detected cube position before publishing state/marker [x, y, z] in meters.
@@ -64,8 +64,8 @@ cube_tracker_node:
     tf_timeout_s: 0.05
 
     # Visualization outputs.
-    publish_debug_image: true
-    publish_mask_image: true
+    publish_debug_image: false
+    publish_mask_image: false
 
 policy_node:
   ros__parameters:
@@ -79,13 +79,18 @@ policy_node:
     fake_observations_mode: false
     # When true, keep real robot observations but replace cube position/velocity
     # in the high-level observation with the values below.
-    fake_cube_observation_mode: true
+    fake_cube_observation_mode: false
     fake_cube_position_xy: [0.3, 0.0]
     fake_cube_velocity_xy: [0.0, 0.0]
+    fake_cube_publish_period_s: 0.05
+    cube_marker_topic: /go2_fetch/cube_marker
+    cube_dimensions: [0.16, 0.16, 0.16]
     # Independent output gate. Fake observation mode always overrides this to false.
-    send_commands: false
-    # Runtime-switchable command source: PushCube policy when true, joystick when false.
+    send_commands: true
+    # Master high-level permission. false = always joystick/manual.
+    # true = high-level is allowed, starts disabled, and X toggles it while running.
     use_high_level_policy: false
+    high_level_toggle_button: X
     fake_observation_seed: 0
     fake_observation_min: -1.0
     fake_observation_max: 1.0
@@ -106,7 +111,7 @@ policy_node:
     # ROS bridge topics used by the Kalman/inekf helper.
     kalman_odom_topic: /odometry/filtered
     cube_state_topic: /go2_fetch/cube_state
-    goal_xy: [0.0, 0.0]
+    goal_xy: [1.0, 0.0]
     goal_radius: 0.2
     # Real-mode high-level observations obtain the left-front-foot position from TF.
     policy_world_frame: odom
@@ -117,12 +122,12 @@ policy_node:
     inekf_lowstate_topic: /inekf_lowstate
     lowstate_publish_period_s: 0.005
 
-    # Original deploy_real/configs/go2.yaml values.
+    # Unitree ROS 2 topics.
     msg_type: go
     imu_type: pelvis
-    lowcmd_topic: rt/lowcmd
-    lowstate_topic: rt/lowstate
-    sportstate_topic: rt/sportmodestate
+    lowcmd_topic: /lowcmd
+    lowstate_topic: /lf/lowstate
+    sportstate_topic: /sportmodestate
     policy_path: ""
     policy_base_dir: /home/ferdinand/fetchrobot/ferdinand/go2_fetch_rl
     high_level_policy_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/unitree_go2_pushcube_4l/2026-05-15_02-52-05_cam_6/policy.pt
@@ -132,7 +137,20 @@ policy_node:
     kps: [25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0]
     kds: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
     # Per-motor feed-forward torque limits [Nm]. Applied to LowCmd.motor_cmd[i].tau before send.
-    torque_limits: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
+    # - joint 0 FL_hip goes to motor 3
+    # - joint 1 FL_thigh goes to motor 0
+    # - joint 2 FL_calf goes to motor 9
+    # - joint 3 FR_hip goes to motor 6
+    # - joint 4 FR_thigh goes to motor 4
+    # - joint 5 FR_calf goes to motor 1
+    # - joint 6 RL_hip goes to motor 10
+    # - joint 7 RL_thigh goes to motor 7
+    # - joint 8 RL_calf goes to motor 5
+    # - joint 9 RR_hip goes to motor 2
+    # - joint 10 RR_thigh goes to motor 11
+    # - joint 11 RR_calf goes to motor 8
+    torque_limits: [18.0, 18.0, 16.0, 16.0, 18.0, 18.0, 16.0, 18.0, 18.0, 18.0, 16.0, 18.0]
+    # torque_limits: [20.0, 20.0, 18.0, 18.0, 20.0, 20.0, 18.0, 20.0, 20.0, 20.0, 18.0, 20.0] # higher
     weak_motor: []
     arm_waist_joint2motor_idx: []
     arm_waist_kps: []
@@ -148,8 +166,7 @@ policy_node:
     high_level_num_obs: 48
     low_level_num_obs: 45
     num_obs: 45
-    max_cmd: [1.0, 1.0, 1.0]
-
+    max_cmd: [0.6, 0.5, 0.8] # joy stick command limits for [x, y, yaw]
 state_machine_node:
   ros__parameters:
     # IO topics.
