@@ -1,0 +1,6 @@
+[submodule "go2_description"]
+	path = go2_description
+	url = https://github.com/inria-paris-robotics-lab/go2_description.git
+[submodule "invariant-ekf"]
+	path = invariant-ekf
+	url = https://github.com/inria-paris-robotics-lab/invariant-ekf.git
