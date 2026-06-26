@@ -99,7 +99,7 @@ policy_node:
     # hierarchical_lowcmd = current full stack, publishes /lowcmd.
     # unitree_sport_high_level = only run the high-level policy and send
     # Unitree Sport Move commands while Unitree low-level software is active.
-    control_mode: unitree_sport_high_level # options: hierarchical_lowcmd or unitree_sport_high_level
+    control_mode: hierarchical_lowcmd # options: hierarchical_lowcmd or unitree_sport_high_level
     #auto_switch_to_low_level: true
     wait_for_start_button: true
     wait_for_a_button: true
@@ -176,7 +176,7 @@ policy_node:
     high_level_num_obs: 48
     low_level_num_obs: 45
     num_obs: 45
-    max_cmd: [0.3, 0.3, 0.5] # joy stick command limits for [x, y, yaw]
+    max_cmd: [0.5, 0.5, 0.6] # joy stick command limits for [x, y, yaw]
 
 
 state_machine_node:

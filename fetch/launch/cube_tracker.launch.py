@@ -50,8 +50,10 @@ def generate_launch_description() -> LaunchDescription:
             'pointcloud.ordered_pc': True,
             'pointcloud__neon_.ordered_pc': True,
             'align_depth.enable': True,
-            'depth_module.profile': '640x480x30',
-            'rgb_camera.profile': '640x480x30',
+            # 'depth_module.profile': '640x480x30',
+            # 'rgb_camera.profile': '640x480x30',
+            'depth_module.profile': '1280x720x30',
+            'rgb_camera.profile': '1280x720x30',
             # Fixed RealSense post-processing filters for lighter/cleaner point clouds.
             'decimation_filter.enable': True,
             'decimation_filter.filter_magnitude': 4,

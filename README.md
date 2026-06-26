@@ -1,72 +1,55 @@
 # go2_fetch_ros2
-ROS2 packages for the Unitree Go2 robot fetch project. Running a RL policy to push back a play cube
 
+ROS 2 packages for the Unitree Go2 robot fetch project. This project runs an RL policy to push back a play cube.
 
-### Always disable conda env (with cdd as shortcut) when using ROS2!
+> Always disable the Conda environment when using ROS 2.
+>
+> Shortcut note: use `cdd` if that is configured on your machine.
 
+## Table of Contents
 
-## Connect to Unitree with SSH
+- [Environment Setup](#environment-setup)
+- [Connect to Unitree](#connect-to-unitree)
+- [ROS 2 Network Setup](#ros-2-network-setup)
+- [TensorRT Policy Engines](#tensorrt-policy-engines)
+- [Robot Motion Commands](#robot-motion-commands)
+- [Realsense Camera](#realsense-camera)
+- [Foxglove and RViz2](#foxglove-and-rviz2)
+- [Useful Commands](#useful-commands)
+- [Troubleshooting](#troubleshooting)
+- [Information](#information)
+- [Unitree Onboard Computer Specifications](#unitree-onboard-computer-specifications)
 
-Ethernet 
+## Environment Setup
+
+### Conda and ROS 2 Conflicts
+
+Disable Conda auto-activation to avoid conflicts with ROS 2:
+
 ```bash
-ssh unitree@192.168.123.18 # password 123
+conda config --set auto_activate false
+conda config --set auto_activate_base false
 ```
 
-Wifi
+When using VS Code, reload your terminal cleanly:
+
 ```bash
-ssh unitree@192.168.11.8  # password 123
+exec bash
 ```
 
-for compressed image : sudo apt install ros-humble-image-transport-plugins
+This is cleaner than sourcing `~/.bashrc`. Verify your Python environment:
 
-Make engine file of policy:
-
-cd /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/unitree_go2_velocity_4l/2026-04-05_12-01-56_walk_2
-
-/usr/src/tensorrt/bin/trtexec \
-    --onnx=policy.onnx \
-    --saveEngine=policy.engine
-
-  For the pushcube model too:
-
-  cd /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/unitree_go2_pushcube_4l/2026-05-15_02-52-05_cam_6
-
-  /usr/src/tensorrt/bin/trtexec \
-    --onnx=policy.onnx \
-    --saveEngine=policy.engine
-
-
-run ros2 on computer
 ```bash
-export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="lo" priority="default" multicast="default" /></Interfaces></General></Domain></CycloneDDS>'
+echo $PATH
+which python3  # Should output: /usr/bin/python3
 ```
 
-make robot move:
+Ensure Conda is not in your `PATH`, as it interferes with ROS 2.
+
+### Conda Environment for Deploying RL Policy with ROS 2
 
 ```bash
-ros2 topic pub /api/sport/request unitree_api/msg/Request "{header: {identity: {api_id: 1008}}, parameter: '{\"x\": 0.0, \"y\": 0.0, \"z\": 0.5}'}" -r 10
-```
-
-
-stand down 
-```bash
-ros2 topic pub --once /api/sport/request unitree_api/msg/Request \
-"{header: {identity: {api_id: 1005}}, parameter: ''}"
-```
-
-others
-```bash
-ros2 launch fetch policy_test.launch.py
-ros2 topic pub --once /go2_fetch/mode std_msgs/msg/String "{data: policy}"
-
-ros2 topic pub /cmd_vel geometry_msgs/msg/Twist \
-"{linear: {x: 0.03, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" -r 10
-```
-
-## Make conda env for deploying RL policy with ROS2
-
-```bash
-python3 --version # Check systems python version (here Python 3.10.12)
+python3 --version # Check system Python version. Here: Python 3.10.12.
 conda create -n env_deploy python=3.10.12
 conda activate env_deploy
 ```
@@ -75,12 +58,16 @@ conda activate env_deploy
 pip install --upgrade pip
 ```
 
-Install a CUDA-enabled PyTorch 2.7.0 build for CUDA 12.8 (here CUDA 13.0 but still 12.8 is still ok):
+### Install PyTorch
+
+Install a CUDA-enabled PyTorch 2.7.0 build for CUDA 12.8. CUDA 13.0 is present here, but 12.8 is still OK:
+
 ```bash
 pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
 ```
 
-Install extra stuff and stuff that is required
+### Install Extra Requirements
+
 ```bash
 pip install --no-cache-dir \
   matplotlib==3.8.4 \
@@ -94,10 +81,12 @@ pip install --no-cache-dir \
   pytz
 ```
 
-`Unitree_sdk2py` is a Python library that enables direct communication with Unitree robots.
-It plays a crucial role in this project, allowing the system to collect sensor data from the robot and send velocity and motor commands in real time.
+### Install Unitree SDK2 Python
 
-Clone the repository using Git :
+`Unitree_sdk2py` is a Python library that enables direct communication with Unitree robots. It plays a crucial role in this project, allowing the system to collect sensor data from the robot and send velocity and motor commands in real time.
+
+Clone the repository using Git:
+
 ```bash
 cd ~/unitree
 git clone https://github.com/unitreerobotics/unitree_sdk2_python.git
@@ -105,34 +94,168 @@ cd unitree_sdk2_python
 pip install -e .
 ```
 
-Install things for go2_odometry
+### Install Things for `go2_odometry`
+
 ```bash
 pip install "empy==3.3.4" "catkin-pkg==1.1.0" "lark==1.1.1" colcon-common-extensions
 
 conda install -c conda-forge pinocchio -y
 ```
 
+### Installed Packages
 
-**If you are inside a Conda env, pre-load the system libstdc++** or `rclpy` may complain about `GLIBCXX`. When you run ROS 2 Python nodes from a **Conda environment**, Conda provides its own `libstdc++.so.6`. ROS 2 Humble’s wheels (`rclpy`, others) were built against the **system** libstdc++ (newer GLIBCXX symbols). It is necessary to tell the dynamic loader to **prefer the system runtime**, preventing the `GLIBCXX_*` family of errors. It’s the cleanest fix when you want Conda + ROS 2 to coexist.
-So, make sure to always pre-load the system libstdc++ (or add it to the `.bashrc` file):
 ```bash
-export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
+pip install ultralytics
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+python3 -c "import torch; print(torch.version.cuda); print(torch.cuda.is_available())"
+pip install git+https://github.com/openai/CLIP.git
+python3 -m pip uninstall -y numpy
 ```
 
-maybe also because ros doesnt use python from library:   
+### Installed Things
+
 ```bash
-export PYTHONPATH="$(python -c 'import site; print(site.getsitepackages()[0])'):$PYTHONPATH"
+sudo apt install v4l-utils
+sudo apt install ffmpeg
+/usr/bin/python3 -m pip install --user pyrealsense2
+
+pip install --user onnx>=1.12.0,<2.0.0
+pip install --user onnxruntime-gpu
+pip install --user onnxslim
 ```
 
+### Compressed Image Transport Plugin
 
+For compressed images:
 
-build problem in docker with conda 
+```bash
+sudo apt install ros-humble-image-transport-plugins
+```
 
-colcon build --symlink-install --cmake-args -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-rpath,/home/unitree/miniforge3/envs/go2_env_go2/lib -L/home/unitree/miniforge3/envs/go2_env_go2/lib" -DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath,/home/unitree/miniforge3/envs/go2_env_go2/lib -L/home/unitree/miniforge3/envs/go2_env_go2/lib" -DPYTHON_EXECUTABLE=/home/unitree/miniforge3/envs/go2_env_go2/bin/python3
+## Connect to Unitree
+
+### Ethernet
+
+```bash
+ssh unitree@192.168.123.18 # password 123
+```
+
+### Wi-Fi
+
+```bash
+ssh unitree@192.168.11.8  # password 123
+```
+
+## ROS 2 Network Setup
+
+### Run ROS 2 on Computer
+
+```bash
+export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="lo" priority="default" multicast="default" /></Interfaces></General></Domain></CycloneDDS>'
+```
+
+### On Robot
+
+```bash
+export CYCLONEDDS_URI="<CycloneDDS><Domain><General><NetworkInterfaceAddress>enP8p1s0</NetworkInterfaceAddress><AllowMulticast>true</AllowMulticast></General></Domain></CycloneDDS>"
+```
+
+### Final Working Command
+
+Recommended to add to your `.bashrc` file on the PC:
+
+```bash
+source /opt/ros/humble/setup.bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export ROS_DOMAIN_ID=0
+export ROS_LOCALHOST_ONLY=0
+export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="eno2" priority="default" multicast="default" /></Interfaces></General></Domain></CycloneDDS>'
+```
+
+### ROS 2 Environment Configuration
+
+```bash
+unset CYCLONEDDS_URI
+echo "$CYCLONEDDS_URI"  # should print empty line
+```
+
+## TensorRT Policy Engines
+
+### Make Engine File for the Walk Policy
+
+```bash
+cd /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/unitree_go2_velocity_4l/2026-04-05_12-01-56_walk_2
+
+/usr/src/tensorrt/bin/trtexec \
+  --onnx=policy.onnx \
+  --saveEngine=policy.engine
+```
+
+### Make Engine File for the Pushcube Policy
+
+```bash
+cd /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/unitree_go2_pushcube_4l/2026-05-15_02-52-05_cam_6
+
+/usr/src/tensorrt/bin/trtexec \
+  --onnx=policy.onnx \
+  --saveEngine=policy.engine
+```
+
+## Robot Motion Commands
+
+### Make Robot Move
+
+```bash
+ros2 topic pub /api/sport/request unitree_api/msg/Request "{header: {identity: {api_id: 1008}}, parameter: '{\"x\": 0.0, \"y\": 0.0, \"z\": 0.5}'}" -r 10
+```
+
+### Stand Down
+
+```bash
+ros2 topic pub --once /api/sport/request unitree_api/msg/Request \
+"{header: {identity: {api_id: 1005}}, parameter: ''}"
+```
+
+### Other Commands
+
+```bash
+ros2 launch fetch policy_test.launch.py
+ros2 topic pub --once /go2_fetch/mode std_msgs/msg/String "{data: policy}"
+
+ros2 topic pub /cmd_vel geometry_msgs/msg/Twist \
+"{linear: {x: 0.03, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" -r 10
+```
 
 ## Realsense Camera
 
-start realsense camera
+### Realsense Camera Setup
+
+```bash
+wget https://raw.githubusercontent.com/IntelRealSense/librealsense/master/config/99-realsense-libusb.rules
+sudo mv 99-realsense-libusb.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
+
+Unplug and replug the camera, then verify:
+
+```bash
+realsense-viewer
+```
+
+### Realsense Camera Connected to PC
+
+```bash
+lsusb -t
+
+sudo dmesg -w # check port live
+```
+
+```bash
+ros2 launch realsense2_camera rs_launch.py pointcloud.enable:=true
+```
+
+### Start Realsense Camera
 
 ```bash
 ros2 run realsense2_camera realsense2_camera_node \
@@ -153,7 +276,8 @@ ros2 run realsense2_camera realsense2_camera_node \
   -p enable_sync:=true
 ```
 
-On Jetson: 
+### Start Realsense Camera on Jetson
+
 ```bash
 ros2 run realsense2_camera realsense2_camera_node \
   --ros-args \
@@ -173,88 +297,99 @@ ros2 run realsense2_camera realsense2_camera_node \
   -p enable_sync:=true
 ```
 
-for foxglove ssh tunnel
+### Stream Realsense with FFmpeg from Terminal
 
+```bash
+ffplay /dev/video4
+```
+
+## Foxglove and RViz2
+
+### Foxglove SSH Tunnel
+
+```bash
 ssh -L 8765:localhost:8765 unitree@192.168.11.10
+```
 
-start foxglove
+### Start Foxglove
 
+```bash
 ros2 launch foxglove_bridge foxglove_bridge_launch.xml
+```
 
+### Foxglove Commands
 
-
-## Foxglove
-
-for foxglove ssh tunnel
-
-ssh -L 8765:localhost:8765 unitree@192.168.11.10
-
-start foxglove
-
+```bash
 ros2 launch foxglove_bridge foxglove_bridge_launch.xml
 
 ros2 launch foxglove_bridge foxglove_bridge_launch.xml topic_whitelist:="['/rosout', '/utlidar/.*']"
 
 ros2 run foxglove_bridge foxglove_bridge --ros-args --params-file /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/config/foxglove_config.yaml
+```
 
+### Repeated Foxglove Notes from Earlier
 
+For Foxglove SSH tunnel:
 
-## Or RVIZ2
+```bash
+ssh -L 8765:localhost:8765 unitree@192.168.11.10
+```
 
+Start Foxglove:
+
+```bash
+ros2 launch foxglove_bridge foxglove_bridge_launch.xml
+```
+
+### RViz2
+
+```bash
 rviz2 -d /home/ferdinand/unitree/src/go2_fetch_ros2/fetch/rviz/realsense.rviz
-
-
-
-
-on robot: export CYCLONEDDS_URI="<CycloneDDS><Domain><General><NetworkInterfaceAddress>enP8p1s0</NetworkInterfaceAddress><AllowMulticast>true</AllowMulticast></General></Domain></CycloneDDS>"
-
-
-### Final working command AND RECOMENDED TO ADD TO YOUR `.bashrc` FILE on the PC:
-
-```bash
-source /opt/ros/humble/setup.bash
-export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-export ROS_DOMAIN_ID=0
-export ROS_LOCALHOST_ONLY=0
-export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="eno2" priority="default" multicast="default" /></Interfaces></General></Domain></CycloneDDS>'
 ```
 
-## Realsense Camera connect to PC
+## Useful Commands
+
+### Record ROS 2 Bags
 
 ```bash
-lsusb -t
-
-sudo dmesg -w # check port live
+ros2 bag record -e "(/go2_fetch/.*|/odometry/filtered|/tf|/camera/depth/color/points|/camera/color/image_raw/compressed|/robot_description|/tf_static)" -x ".*compressedDepth.*"
 ```
+
+### Check Disk Usage
 
 ```bash
-ros2 launch realsense2_camera rs_launch.py pointcloud.enable:=true
+du -h --max-depth=1
 ```
 
-## Conda and ROS2 Conflicts
+## Troubleshooting
 
-Disable conda auto-activation to avoid conflicts with ROS2:
+### Conda and ROS 2 `libstdc++` Fix
+
+If you are inside a Conda environment, pre-load the system `libstdc++` or `rclpy` may complain about `GLIBCXX`.
+
+When you run ROS 2 Python nodes from a Conda environment, Conda provides its own `libstdc++.so.6`. ROS 2 Humble wheels such as `rclpy` were built against the system `libstdc++`, which has newer `GLIBCXX` symbols. Tell the dynamic loader to prefer the system runtime to prevent `GLIBCXX_*` errors. This is the cleanest fix when Conda and ROS 2 need to coexist.
+
+Make sure to always pre-load the system `libstdc++`, or add this to `.bashrc`:
 
 ```bash
-conda config --set auto_activate false
-conda config --set auto_activate_base false
+export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
 ```
 
-When using VS Code, reload your terminal cleanly:
+Maybe also needed because ROS does not use Python from the library:
 
 ```bash
-exec bash
+export PYTHONPATH="$(python -c 'import site; print(site.getsitepackages()[0])'):$PYTHONPATH"
 ```
 
-This is cleaner than sourcing `~/.bashrc`. Verify your Python environment:
+### Build Problem in Docker with Conda
 
 ```bash
-echo $PATH
-which python3  # Should output: /usr/bin/python3
+colcon build --symlink-install --cmake-args -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-rpath,/home/unitree/miniforge3/envs/go2_env_go2/lib -L/home/unitree/miniforge3/envs/go2_env_go2/lib" -DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath,/home/unitree/miniforge3/envs/go2_env_go2/lib -L/home/unitree/miniforge3/envs/go2_env_go2/lib" -DPYTHON_EXECUTABLE=/home/unitree/miniforge3/envs/go2_env_go2/bin/python3
 ```
 
-Ensure conda is not in your `PATH`, as it interferes with ROS2.
-### Killing ROS2 Processes (Not really neccesary)
+### Killing ROS 2 Processes
+
+Not really necessary.
 
 ```bash
 cd ~/unitree
@@ -272,103 +407,60 @@ ros2 topic list
 source install/setup.bash
 ```
 
-Stop specific ROS2 processes:
+Stop specific ROS 2 processes:
+
 ```bash
 pkill -f "ros2 topic echo"
 ```
 
-### Installed Packages
+## Information
 
-```bash
-pip install ultralytics
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
-python3 -c "import torch; print(torch.version.cuda); print(torch.cuda.is_available())"
-pip install git+https://github.com/openai/CLIP.git
-python3 -m pip uninstall -y numpy
-```
-
-### ROS2 Environment Configuration
-
-```bash
-unset CYCLONEDDS_URI
-echo "$CYCLONEDDS_URI"  # should print empty line
-```
-
-### Realsense Camera Setup
-
-```bash
-wget https://raw.githubusercontent.com/IntelRealSense/librealsense/master/config/99-realsense-libusb.rules
-sudo mv 99-realsense-libusb.rules /etc/udev/rules.d/
-sudo udevadm control --reload-rules
-sudo udevadm trigger
-```
-
-Unplug and replug the camera, then verify:
-```bash
-realsense-viewer
-```
-
-Stream realsense with ffmpeg from terminal
-```bash
-ffplay /dev/video4
-```
-
-### Installed things 
-
-```bash
-sudo apt install v4l-utils 
-sudo apt install ffmpeg
-/usr/bin/python3 -m pip install --user pyrealsense2
-
-pip install --user onnx>=1.12.0,<2.0.0
-pip install --user onnxruntime-gpu
-pip install --user onnxslim
-```
-
-### Information
-
-* https://forum.mybotshop.de/t/unitree-go2-openmanipulator-realsense-d435i-realsense-d405-mid360-lidar-ros-foxy/1007
-* https://techshare.co.jp/faq/unitree/unitree-go2_pc_lan.html
-* https://github.com/TheoBounac/Deploy_SimToReal_RL_Go2
-
+- https://forum.mybotshop.de/t/unitree-go2-openmanipulator-realsense-d435i-realsense-d405-mid360-lidar-ros-foxy/1007
+- https://techshare.co.jp/faq/unitree/unitree-go2_pc_lan.html
+- https://github.com/TheoBounac/Deploy_SimToReal_RL_Go2
 
 <br>
 
 ## Unitree Onboard Computer Specifications
 
-## 1. Core Processor (CPU)
-* **Model:** ARMv8 Processor (6-Core)
-* **Architecture:** aarch64 (64-bit)
-* **Clock Speed:** Max 1510 MHz (1.5 GHz)
-* **Hardware Type:** Likely an **NVIDIA Jetson Xavier NX** module (consistent with 6-core ARMv8 and ~8GB RAM specs).
+### 1. Core Processor (CPU)
 
-## 2. Memory (RAM)
-* **Total Capacity:** 7.2 GiB (Effective 8GB Physical RAM)
-* **Currently Used:** ~831 MiB
-* **Available:** ~6.1 GiB
-* **Swap Space:** 3.6 GiB configured
+- **Model:** ARMv8 Processor, 6-core
+- **Architecture:** aarch64, 64-bit
+- **Clock Speed:** Max 1510 MHz, 1.5 GHz
+- **Hardware Type:** Likely an **NVIDIA Jetson Xavier NX** module, consistent with 6-core ARMv8 and about 8 GB RAM specs.
 
-## 3. Storage (Disk)
-* **Main Drive:** 234 GB NVMe SSD (`/dev/nvme0n1p1`)
-* **Used Space:** 22 GB (10%)
-* **Available Space:** 203 GB
-* **Note:** The use of an NVMe drive indicates this is an upgraded or "Edu" version of the Unitree controller, as base models often use slower eMMC storage.
+### 2. Memory (RAM)
 
-## 4. Graphics & AI (GPU)
-* **Status:** `nvidia-smi` not found. 
-* **Note:** On Jetson devices, `nvidia-smi` is often absent. To check GPU usage on this hardware, use:
-    ```bash
-    sudo tegrastats
-    ```
-* **Package Info:** `nvidia-jetpack` was not found in the apt-cache, suggesting the OS may have been custom-flashed or the repositories are not currently pointed to the NVIDIA servers.
+- **Total Capacity:** 7.2 GiB, effective 8 GB physical RAM
+- **Currently Used:** about 831 MiB
+- **Available:** about 6.1 GiB
+- **Swap Space:** 3.6 GiB configured
 
-## 5. Operating System
-* **User:** unitree
-* **Hostname:** ubuntu
-* **Environment:** ROS 2 (Foxy) and ROS 1 (Noetic) installed via FishROS.
+### 3. Storage (Disk)
 
+- **Main Drive:** 234 GB NVMe SSD, `/dev/nvme0n1p1`
+- **Used Space:** 22 GB, 10%
+- **Available Space:** 203 GB
+- **Note:** The use of an NVMe drive indicates this is an upgraded or "Edu" version of the Unitree controller, as base models often use slower eMMC storage.
 
+### 4. Graphics and AI (GPU)
 
-Your robot is equipped with an 8GB Xavier NX or a similar Jetson module. You have plenty of storage (203GB free) and RAM (6GB available), which is more than enough to run the SLAM and LiDAR nodes you have active.
+- **Status:** `nvidia-smi` not found.
+- **Note:** On Jetson devices, `nvidia-smi` is often absent. To check GPU usage on this hardware, use:
 
-However, the "package not found" for Jetpack suggests that if you need to compile GPU-accelerated code (like custom CUDA kernels), you might need to fix your source lists or rely on the pre-installed libraries in /usr/local/cuda-11.4/.
+  ```bash
+  sudo tegrastats
+  ```
+
+- **Package Info:** `nvidia-jetpack` was not found in the apt-cache, suggesting the OS may have been custom-flashed or the repositories are not currently pointed to the NVIDIA servers.
+
+### 5. Operating System
+
+- **User:** unitree
+- **Hostname:** ubuntu
+- **Environment:** ROS 2 Foxy and ROS 1 Noetic installed via FishROS.
+
+Your robot is equipped with an 8 GB Xavier NX or a similar Jetson module. You have plenty of storage, 203 GB free, and RAM, 6 GB available, which is more than enough to run the SLAM and LiDAR nodes you have active.
+
+However, the "package not found" for Jetpack suggests that if you need to compile GPU-accelerated code, such as custom CUDA kernels, you might need to fix your source lists or rely on the pre-installed libraries in `/usr/local/cuda-11.4/`.

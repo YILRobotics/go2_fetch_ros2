@@ -37,7 +37,7 @@ def generate_launch_description():
                 parameters=[
                     {
                         "robot_freq": 500.0,
-                        "wait_for_all_feet_contact": False,
+                        "wait_for_all_feet_contact": True,
                     }
                 ], # robot_freq should be 500.0
             ),
