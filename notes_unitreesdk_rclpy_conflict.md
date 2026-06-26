@@ -1,3 +1,50 @@
+ 
+ Here is a concise summary of the issue, the fix, and how to manually handle the mode switching now.
+
+### The Core Problem
+
+Your application was crashing (`DDS_RETCODE_BAD_PARAMETER`) because it tried to run **two separate DDS systems inside a single Python process**:
+
+1. **ROS 2 (`rclpy`)**, which initializes CycloneDDS for robot state and odometry.
+2. **The Unitree SDK (`unitree_sdk2py`)**, which tried to initialize CycloneDDS a second time to send commands.
+
+Because they conflicted instantly, the program crashed before any RL model logic or robot safety modes even mattered.
+
+---
+
+### The Fix (Option 1)
+
+To eliminate the conflict, the `policy_node` was converted to use **pure ROS 2 communication**.
+
+* **What changed:** Instead of sending commands directly through the Unitree SDK, the node now publishes a standard ROS 2 message (`unitree_go/msg/LowCmd`) and subscribes to ROS 2 state topics (`/lf/lowstate`).
+* **What stays the same:** The core functionality—loading your PyTorch (`.pt`) models, processing observations, and calculating the torque/joint commands—remains exactly identical to the original repository.
+
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ ---------------------------------------------
+ ---------------------------------------------
+ ---------------------------------------------
+ ---------------------------------------------
+
+
+
+
+
  policy_nod: Multicast Ports: discovery 7400 data 7401
   1782378249.508292 [0] policy_nod: failed to increase socket receive buffer size to 1048576 bytes, continuing with 425984 bytes
   1782378249.508318 [0] policy_nod: interface enP8p1s0: transmit port 52992

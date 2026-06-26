@@ -54,12 +54,29 @@ All main parameters are in:
 Important fields:
 
 - model path (`policy_base_dir`, `policy_path`)
+- control mode (`control_mode`):
+  - `hierarchical_lowcmd`: current full stack, publishes `/lowcmd`
+  - `unitree_sport_high_level`: only runs the high-level policy and sends Unitree Sport `Move` requests on `/api/sport/request`
 - Unitree ROS 2 topics (`lowstate_topic`, `lowcmd_topic`, `sportstate_topic`)
 - safe policy test mode (`fake_observations_mode`, `send_commands`)
 - runtime velocity-command source (`use_high_level_policy`)
 - startup controls (`wait_for_start_button`, `wait_for_a_button`)
 - tracker thresholds (confidence, depth range, outlier filtering)
 - FSM timeouts (`cube_lost_timeout_s`, `cube_reacquire_hold_s`)
+
+## Policy Model Files
+
+`policy_node.py` currently loads policy files with `torch.jit.load`, so the
+high-level and low-level policy paths must point to TorchScript `.pt` files.
+
+TensorRT `.engine` files cannot be loaded by `torch.jit.load`. To use
+`policy.engine`, the node needs a TensorRT runtime wrapper that loads the engine,
+allocates CUDA buffers, runs inference, and returns the same outputs:
+
+- high-level policy: `[1, 48] -> [1, 3]`
+- low-level policy: `[1, 45] -> [1, 12]`
+
+Use `.pt` files unless TensorRT support has been added to `policy_node.py`.
 
 ## PushCube-4L Policy Interface
 

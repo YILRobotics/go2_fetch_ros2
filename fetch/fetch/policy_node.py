@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import math
+import json
 import threading
 import time
 from pathlib import Path
@@ -11,6 +12,7 @@ from pathlib import Path
 import numpy as np
 import rclpy
 import torch
+from geometry_msgs.msg import Point
 from nav_msgs.msg import Odometry
 from rcl_interfaces.msg import SetParametersResult
 from rclpy.duration import Duration
@@ -34,12 +36,18 @@ from fetch.deploy_real_utils import (
     set_motor_cmd_velocity,
 )
 
+CONTROL_MODE_HIERARCHICAL_LOWCMD = "hierarchical_lowcmd"
+CONTROL_MODE_UNITREE_SPORT_HIGH_LEVEL = "unitree_sport_high_level"
+SPORT_API_ID_STOPMOVE = 1003
+SPORT_API_ID_MOVE = 1008
+
 
 class RealPolicyNode(Node):
     def __init__(self) -> None:
         super().__init__("policy_node")
         self._declare_parameters()
         self.config = self._config_from_parameters()
+        self.control_mode = self._control_mode_from_parameter()
         # self.project_root = Path(self.get_parameter("project_root").value).expanduser()
         # sdk_paths = self._array_parameter(
         #     "unitree_sdk_paths",
@@ -51,6 +59,9 @@ class RealPolicyNode(Node):
         self.remote_controller = RemoteController()
         self.base_lin_vel_input = [0, 0, 0, 0]
         self.low_state_msg = None
+        self.lowcmd_publisher_ = None
+        self.sport_request_publisher = None
+        self.SportRequestRos = None
         self._stop_event = threading.Event()
         self._worker_thread = None
         self.fake_observations_mode = bool(self.get_parameter("fake_observations_mode").value)
@@ -106,6 +117,7 @@ class RealPolicyNode(Node):
         #     Parameter.Type.STRING_ARRAY,
         # )
         self.declare_parameter("start_policy_on_startup", True)
+        self.declare_parameter("control_mode", CONTROL_MODE_HIERARCHICAL_LOWCMD)
         self.declare_parameter("fake_observations_mode", True)
         self.declare_parameter("send_commands", False)
         self.declare_parameter("use_high_level_policy", True)
@@ -116,9 +128,15 @@ class RealPolicyNode(Node):
         self.declare_parameter("fake_cube_observation_mode", False)
         self.declare_parameter("fake_cube_position_xy", [0.8, 0.0])
         self.declare_parameter("fake_cube_velocity_xy", [0.0, 0.0])
+        self.declare_parameter("cube_state_timeout_s", 0.5)
         self.declare_parameter("fake_cube_publish_period_s", 0.05)
         self.declare_parameter("cube_marker_topic", "/go2_fetch/cube_marker")
         self.declare_parameter("cube_dimensions", [0.16, 0.16, 0.16])
+        self.declare_parameter("command_velocity_marker_topic", "/go2_fetch/command_velocity_marker")
+        self.declare_parameter("current_velocity_marker_topic", "/go2_fetch/current_velocity_marker")
+        self.declare_parameter("command_velocity_marker_frame", "base")
+        self.declare_parameter("command_velocity_marker_z_offset", 0.25)
+        self.declare_parameter("command_velocity_marker_scale", 0.25)
         self.declare_parameter("auto_switch_to_low_level", True)
         self.declare_parameter("wait_for_start_button", True)
         self.declare_parameter("wait_for_a_button", True)
@@ -132,12 +150,14 @@ class RealPolicyNode(Node):
         self.declare_parameter("policy_world_frame", "odom")
         self.declare_parameter("lf_foot_frame", "FL_foot")
         self.declare_parameter("lf_foot_tf_timeout_s", 0.02)
+        self.declare_parameter("cube_state_tf_timeout_s", 0.05)
         self.declare_parameter("robot_twist_in_body_frame", True)
         self.declare_parameter("inekf_lowstate_topic", "/inekf_lowstate")
         self.declare_parameter("lowstate_publish_period_s", 0.005)
         self.declare_parameter("model_loop_period_s", 0.02)
         self.declare_parameter("startup_sleep_s", 0.001)
         self.declare_parameter("motor_log_every_n_steps", 50)
+        self.declare_parameter("high_level_command_log_period_s", 1.0)
 
         self.declare_parameter("control_dt", 0.005)
         self.declare_parameter("msg_type", "go")
@@ -147,8 +167,13 @@ class RealPolicyNode(Node):
             Parameter.Type.INTEGER_ARRAY,
         )
         self.declare_parameter("lowcmd_topic", "/lowcmd")
-        self.declare_parameter("lowstate_topic", "/lf/lowstate")
+        self.declare_parameter("lowstate_topic", "/lowstate")
         self.declare_parameter("sportstate_topic", "/sportmodestate")
+        self.declare_parameter("sport_request_topic", "/api/sport/request")
+        self.declare_parameter("sport_move_publish_rate_hz", 15.0)
+        self.declare_parameter("sport_stop_on_disable", True)
+        self.declare_parameter("sport_command_log_every_n_steps", 50)
+        self.declare_parameter("sport_command_scale", [-1.0, 1.0, 1.0])
         self.declare_parameter("policy_path", "")
         self.declare_parameter("policy_base_dir", "/home/ferdinand/fetchrobot/ferdinand/go2_fetch_rl")
         self.declare_parameter(
@@ -192,6 +217,20 @@ class RealPolicyNode(Node):
         self.declare_parameter("num_obs", 45)
         self.declare_parameter("max_cmd", [1.0, 1.0, 1.0])
 
+    def _control_mode_from_parameter(self) -> str:
+        control_mode = str(self.get_parameter("control_mode").value)
+        valid_modes = {
+            CONTROL_MODE_HIERARCHICAL_LOWCMD,
+            CONTROL_MODE_UNITREE_SPORT_HIGH_LEVEL,
+        }
+        if control_mode not in valid_modes:
+            valid = ", ".join(sorted(valid_modes))
+            raise ValueError(f"control_mode must be one of: {valid}")
+        return control_mode
+
+    def _uses_unitree_sport_high_level(self) -> bool:
+        return self.control_mode == CONTROL_MODE_UNITREE_SPORT_HIGH_LEVEL
+
     def _parameter_callback(self, parameters) -> SetParametersResult:
         for parameter in parameters:
             if parameter.name == "fake_cube_observation_mode":
@@ -218,9 +257,9 @@ class RealPolicyNode(Node):
 
             self._next_high_level_time = -math.inf
             if not bool(parameter.value):
-                self.use_high_level_policy = False
+                self._set_high_level_policy_enabled(False)
                 self.get_logger().info(
-                    "High-level policy disabled by parameter; low-level velocity command source is joystick"
+                    "High-level policy disabled by parameter"
                 )
             else:
                 self.get_logger().info(
@@ -287,10 +326,15 @@ class RealPolicyNode(Node):
             self.LowCmdRos = LowCmdRos
             self.LowStateRos = LowStateRos
             self.SportModeStateRos = SportModeStateRos
+            if self._uses_unitree_sport_high_level():
+                from unitree_api.msg import Request as SportRequestRos
+
+                self.SportRequestRos = SportRequestRos
         except Exception as exc:
             self.LowCmdRos = None
             self.LowStateRos = None
             self.SportModeStateRos = None
+            self.SportRequestRos = None
             raise RuntimeError(f"unitree_go ROS messages are required in real mode: {exc}") from exc
 
     def _initialize_ros_io(self) -> None:
@@ -317,17 +361,32 @@ class RealPolicyNode(Node):
             self.get_parameter("cube_marker_topic").value,
             10,
         )
+        self.command_velocity_marker_publisher = self.create_publisher(
+            Marker,
+            self.get_parameter("command_velocity_marker_topic").value,
+            10,
+        )
+        self.current_velocity_marker_publisher = self.create_publisher(
+            Marker,
+            self.get_parameter("current_velocity_marker_topic").value,
+            10,
+        )
         self.fake_cube_publish_timer = self.create_timer(
             float(self.get_parameter("fake_cube_publish_period_s").value),
             self._publish_fake_cube_state,
         )
 
     def _initialize_controller_state(self) -> None:
-        self.get_logger().info("3] ---> Loading high-level and low-level policies")
+        if self._uses_unitree_sport_high_level():
+            self.get_logger().info("3] ---> Loading high-level policy")
+        else:
+            self.get_logger().info("3] ---> Loading high-level and low-level policies")
         high_level_path = self._resolve_policy_path("high_level_policy_path")
-        low_level_path = self._resolve_policy_path("low_level_policy_path")
         self.high_level_policy = torch.jit.load(high_level_path).eval()
-        self.low_level_policy = torch.jit.load(low_level_path).eval()
+        self.low_level_policy = None
+        if not self._uses_unitree_sport_high_level():
+            low_level_path = self._resolve_policy_path("low_level_policy_path")
+            self.low_level_policy = torch.jit.load(low_level_path).eval()
 
         self.default_isaac = [0.1, -0.1, 0.1, -0.1, 0.8, 0.8, 1, 1, -1.5, -1.5, -1.5, -1.5]
         self.base_lin_vel = np.array([0, 0, 0])
@@ -348,12 +407,18 @@ class RealPolicyNode(Node):
         self.robot_yaw = 0.0
         self.cube_pos_xy = np.zeros(2, dtype=np.float32)
         self.cube_lin_vel_xy = np.zeros(2, dtype=np.float32)
+        self._last_cube_state_time = -math.inf
+        self._cube_state_stale_logged = False
+        self._cube_state_tf_warned = False
         if self.fake_cube_observation_mode:
             self._apply_fake_cube_observation()
         self.goal_xy = np.array(self.get_parameter("goal_xy").value, dtype=np.float32)
         self.goal_radius = float(self.get_parameter("goal_radius").value)
         self._next_high_level_time = -math.inf
         self._last_high_level_toggle_pressed = False
+        self._last_select_stop_pressed = False
+        self._sport_stop_sent = False
+        self._last_high_level_command_log_time = -math.inf
 
         self.dt = 0.002
         self.startPos = [0.0] * 12
@@ -401,11 +466,20 @@ class RealPolicyNode(Node):
 
     def _initialize_robot_interfaces(self) -> None:
         self.get_logger().info("4] ----> Initializing ROS 2 Unitree topics")
-        self.lowcmd_publisher_ = self.create_publisher(
-            self.LowCmdRos,
-            self.config.lowcmd_topic,
-            10,
-        )
+        self.lowcmd_publisher_ = None
+        self.sport_request_publisher = None
+        if self._uses_unitree_sport_high_level():
+            self.sport_request_publisher = self.create_publisher(
+                self.SportRequestRos,
+                self.get_parameter("sport_request_topic").value,
+                10,
+            )
+        else:
+            self.lowcmd_publisher_ = self.create_publisher(
+                self.LowCmdRos,
+                self.config.lowcmd_topic,
+                10,
+            )
         self.lowstate_subscriber = self.create_subscription(
             self.LowStateRos,
             self.config.lowstate_topic,
@@ -419,9 +493,11 @@ class RealPolicyNode(Node):
             10,
         )
 
-        self.low_cmd = self.LowCmdRos()
+        self.low_cmd = None
         self.low_state = self.LowStateRos()
-        init_cmd_go(self.low_cmd, weak_motor=self.config.weak_motor)
+        if not self._uses_unitree_sport_high_level():
+            self.low_cmd = self.LowCmdRos()
+            init_cmd_go(self.low_cmd, weak_motor=self.config.weak_motor)
 
     def init_low_level_mode(self) -> None:
         if not bool(self.get_parameter("auto_switch_to_low_level").value):
@@ -475,8 +551,66 @@ class RealPolicyNode(Node):
     def _cube_state_callback(self, msg: Odometry) -> None:
         if self.fake_cube_observation_mode:
             return
-        self.cube_pos_xy[:] = [msg.pose.pose.position.x, msg.pose.pose.position.y]
-        self.cube_lin_vel_xy[:] = [msg.twist.twist.linear.x, msg.twist.twist.linear.y]
+        self._last_cube_state_time = time.monotonic()
+        self._cube_state_stale_logged = False
+        pos_xy, vel_xy = self._transform_cube_state_to_policy_frame(msg)
+        self.cube_pos_xy[:] = pos_xy
+        self.cube_lin_vel_xy[:] = vel_xy
+
+    def _transform_cube_state_to_policy_frame(self, msg: Odometry) -> tuple[np.ndarray, np.ndarray]:
+        source_frame = msg.header.frame_id
+        target_frame = str(self.get_parameter("policy_world_frame").value)
+        pos_xy = np.array(
+            [msg.pose.pose.position.x, msg.pose.pose.position.y], dtype=np.float32
+        )
+        vel_xy = np.array(
+            [msg.twist.twist.linear.x, msg.twist.twist.linear.y], dtype=np.float32
+        )
+        if not source_frame or source_frame == target_frame:
+            self._cube_state_tf_warned = False
+            return pos_xy, vel_xy
+
+        timeout = Duration(
+            seconds=float(self.get_parameter("cube_state_tf_timeout_s").value)
+        )
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                target_frame, source_frame, Time(), timeout=timeout
+            )
+        except Exception as exc:
+            if not self._cube_state_tf_warned:
+                self.get_logger().warn(
+                    f"Cube state TF {target_frame} <- {source_frame} unavailable; "
+                    f"using raw cube_state_topic coordinates: {exc}"
+                )
+                self._cube_state_tf_warned = True
+            return pos_xy, vel_xy
+
+        self._cube_state_tf_warned = False
+        translation = transform.transform.translation
+        rotation = transform.transform.rotation
+        yaw = math.atan2(
+            2.0 * (rotation.w * rotation.z + rotation.x * rotation.y),
+            1.0 - 2.0 * (rotation.y * rotation.y + rotation.z * rotation.z),
+        )
+        cos_yaw = math.cos(yaw)
+        sin_yaw = math.sin(yaw)
+        rotated_pos = np.array(
+            [
+                cos_yaw * pos_xy[0] - sin_yaw * pos_xy[1],
+                sin_yaw * pos_xy[0] + cos_yaw * pos_xy[1],
+            ],
+            dtype=np.float32,
+        )
+        rotated_vel = np.array(
+            [
+                cos_yaw * vel_xy[0] - sin_yaw * vel_xy[1],
+                sin_yaw * vel_xy[0] + cos_yaw * vel_xy[1],
+            ],
+            dtype=np.float32,
+        )
+        rotated_pos += np.array([translation.x, translation.y], dtype=np.float32)
+        return rotated_pos, rotated_vel
 
     def _apply_fake_cube_observation(self) -> None:
         self.cube_pos_xy[:] = self._xy_parameter("fake_cube_position_xy")
@@ -486,6 +620,7 @@ class RealPolicyNode(Node):
         if not self.fake_cube_observation_mode:
             return
         self._apply_fake_cube_observation()
+        self._last_cube_state_time = time.monotonic()
 
         msg = Odometry()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -533,6 +668,82 @@ class RealPolicyNode(Node):
         marker.color.b = 0.0
         marker.color.a = 0.6
         self.fake_cube_marker_publisher.publish(marker)
+
+    def _publish_command_velocity_marker(self) -> None:
+        marker = Marker()
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.header.frame_id = str(
+            self.get_parameter("command_velocity_marker_frame").value
+        )
+        marker.ns = "command_velocity"
+        marker.id = 0
+
+        vx = float(self.cmd[0])
+        vy = float(self.cmd[1])
+        command_speed = math.hypot(vx, vy)
+        if command_speed < 1e-3:
+            marker.action = Marker.DELETE
+            self.command_velocity_marker_publisher.publish(marker)
+            return
+
+        z_offset = float(self.get_parameter("command_velocity_marker_z_offset").value)
+        marker.type = Marker.ARROW
+        marker.action = Marker.ADD
+        marker.points = [
+            Point(x=0.0, y=0.0, z=z_offset),
+            Point(
+                x=vx * float(self.get_parameter("command_velocity_marker_scale").value),
+                y=vy * float(self.get_parameter("command_velocity_marker_scale").value),
+                z=z_offset,
+            ),
+        ]
+        marker.scale.x = 0.035
+        marker.scale.y = 0.09
+        marker.scale.z = 0.12
+        marker.color.r = 0.0
+        marker.color.g = 0.7
+        marker.color.b = 1.0
+        marker.color.a = 0.9
+        marker.lifetime = Duration(seconds=0.25).to_msg()
+        self.command_velocity_marker_publisher.publish(marker)
+
+    def _publish_current_velocity_marker(self) -> None:
+        marker = Marker()
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.header.frame_id = str(
+            self.get_parameter("command_velocity_marker_frame").value
+        )
+        marker.ns = "current_velocity"
+        marker.id = 0
+
+        vx = float(self.base_lin_vel_input[0])
+        vy = float(self.base_lin_vel_input[1])
+        current_speed = math.hypot(vx, vy)
+        if current_speed < 1e-3:
+            marker.action = Marker.DELETE
+            self.current_velocity_marker_publisher.publish(marker)
+            return
+
+        z_offset = float(self.get_parameter("command_velocity_marker_z_offset").value)
+        marker.type = Marker.ARROW
+        marker.action = Marker.ADD
+        marker.points = [
+            Point(x=0.0, y=0.0, z=z_offset),
+            Point(
+                x=vx * float(self.get_parameter("command_velocity_marker_scale").value),
+                y=vy * float(self.get_parameter("command_velocity_marker_scale").value),
+                z=z_offset,
+            ),
+        ]
+        marker.scale.x = 0.035
+        marker.scale.y = 0.09
+        marker.scale.z = 0.12
+        marker.color.r = 1.0
+        marker.color.g = 0.45
+        marker.color.b = 0.0
+        marker.color.a = 0.9
+        marker.lifetime = Duration(seconds=0.25).to_msg()
+        self.current_velocity_marker_publisher.publish(marker)
 
     def _xy_parameter(self, name: str) -> np.ndarray:
         values = list(self.get_parameter(name).value)
@@ -594,9 +805,95 @@ class RealPolicyNode(Node):
     def send_cmd(self, cmd) -> None:
         if not self.commands_enabled:
             return
+        if self.lowcmd_publisher_ is None:
+            return
         self._apply_torque_limits(cmd)
         cmd.crc = compute_go2_lowcmd_crc(cmd)
         self.lowcmd_publisher_.publish(cmd)
+
+    def _publish_sport_request(self, api_id: int, parameter: dict | None = None) -> None:
+        if not self.commands_enabled:
+            return
+        if self.sport_request_publisher is None or self.SportRequestRos is None:
+            return
+
+        request = self.SportRequestRos()
+        request.header.identity.api_id = int(api_id)
+        if parameter is not None:
+            request.parameter = json.dumps(parameter)
+        self.sport_request_publisher.publish(request)
+
+    def _sport_command(self) -> np.ndarray:
+        scale = np.array(self.get_parameter("sport_command_scale").value, dtype=np.float32)
+        if scale.size != 3:
+            raise ValueError("sport_command_scale must contain exactly three values [x, y, yaw]")
+        return (self.cmd * scale).astype(np.float32)
+
+    def _publish_sport_move(self) -> None:
+        sport_cmd = self._sport_command()
+        self._publish_sport_request(
+            SPORT_API_ID_MOVE,
+            {
+                "x": float(sport_cmd[0]),
+                "y": float(sport_cmd[1]),
+                "z": float(sport_cmd[2]),
+            },
+        )
+        self._sport_stop_sent = False
+        self._log_sport_command()
+
+    def _publish_sport_stop_move(self) -> None:
+        if not bool(self.get_parameter("sport_stop_on_disable").value):
+            return
+        if self._sport_stop_sent:
+            return
+        self._publish_sport_request(SPORT_API_ID_STOPMOVE)
+        self._sport_stop_sent = True
+
+    def _set_high_level_policy_enabled(self, enabled: bool) -> None:
+        self.use_high_level_policy = bool(enabled)
+        self._next_high_level_time = -math.inf
+        if not self.use_high_level_policy:
+            self.cmd[:] = 0.0
+            if self._uses_unitree_sport_high_level():
+                self._publish_sport_stop_move()
+                self._publish_command_velocity_marker()
+
+    def _real_cube_state_is_fresh(self) -> bool:
+        if self.fake_observations_mode or self.fake_cube_observation_mode:
+            return True
+
+        timeout_s = float(self.get_parameter("cube_state_timeout_s").value)
+        if timeout_s <= 0.0:
+            return True
+
+        age_s = time.monotonic() - self._last_cube_state_time
+        if age_s <= timeout_s:
+            return True
+
+        if not self._cube_state_stale_logged:
+            self.get_logger().warn(
+                "No fresh cube_state_topic messages; disabling high-level policy commands "
+                f"until cube tracking resumes. age_s={age_s:.3f} timeout_s={timeout_s:.3f}"
+            )
+            self._cube_state_stale_logged = True
+        return False
+
+    def _stop_for_stale_cube_state(self) -> None:
+        self._set_high_level_policy_enabled(False)
+        self._publish_command_velocity_marker()
+        if self._uses_unitree_sport_high_level():
+            self._publish_sport_stop_move()
+
+    def _log_sport_command(self) -> None:
+        log_every = int(self.get_parameter("sport_command_log_every_n_steps").value)
+        if log_every <= 0 or self.counter % log_every != 0:
+            return
+        self.get_logger().info(
+            "Unitree Sport Move "
+            f"step={self.counter} "
+            f"cmd={np.array2string(self.cmd, precision=3, suppress_small=True)}"
+        )
 
     def _log_policy_motor_outputs(self) -> None:
         log_every = int(self.get_parameter("motor_log_every_n_steps").value)
@@ -623,9 +920,9 @@ class RealPolicyNode(Node):
         self.get_logger().info(
             "Policy motor output "
             f"step={self.counter} "
-            f"cmd={np.array2string(self.cmd, precision=3, suppress_small=True)} "
-            f"action={np.array2string(self.action, precision=3, suppress_small=True)} "
-            f"q_target={np.array2string(q_targets, precision=3, suppress_small=True)} "
+            # f"cmd={np.array2string(self.cmd, precision=3, suppress_small=True)} "
+            # f"action={np.array2string(self.action, precision=3, suppress_small=True)} "
+            # f"q_target={np.array2string(q_targets, precision=3, suppress_small=True)} "
             # f"kp={np.array2string(kp_values, precision=2, suppress_small=True)} "
             # f"kd={np.array2string(kd_values, precision=2, suppress_small=True)} "
             # f"tau={np.array2string(tau_values, precision=3, suppress_small=True)}"
@@ -656,6 +953,27 @@ class RealPolicyNode(Node):
             self.high_level_action = self._fake_rng.uniform(
                 observation_min, observation_max, size=3
             ).astype(np.float32)
+        self.cmd[:] = np.clip(
+            self.high_level_action[:3],
+            -self.config.max_cmd,
+            self.config.max_cmd,
+        )
+        self._publish_command_velocity_marker()
+        self._publish_current_velocity_marker()
+
+        if self._uses_unitree_sport_high_level():
+            log_every = max(
+                1,
+                int(self.get_parameter("fake_log_every_n_steps").value),
+            )
+            if self.counter % log_every == 0:
+                self.get_logger().info(
+                    f"Fake high-level policy step {self.counter}: "
+                    f"high_obs={self.high_level_obs.size} "
+                    f"high_action={self.high_level_action[:3]} "
+                    "commands_sent=false"
+                )
+            return self.high_level_obs
 
         self.obs = self._fake_rng.uniform(
             observation_min,
@@ -823,41 +1141,15 @@ class RealPolicyNode(Node):
         qj_obs = qj_obs - default_joint
 
         if self.use_high_level_policy:
-            now = time.monotonic()
-            high_period = 1.0 / max(
-                float(self.get_parameter("high_level_rate_hz").value), 1e-6
-            )
-            if now >= self._next_high_level_time:
-                self.high_level_obs = self._build_high_level_observation(
-                    ang_vel, gravity_orientation, qj_obs, dqj_obs
-                )
-                with torch.inference_mode():
-                    self.high_level_action = (
-                        self.high_level_policy(
-                            torch.from_numpy(self.high_level_obs).unsqueeze(0)
-                        )
-                        .detach()
-                        .cpu()
-                        .numpy()
-                        .reshape(-1)
-                    )
-                if self.high_level_action.size != 3:
-                    raise RuntimeError(
-                        f"High-level policy returned {self.high_level_action.size} actions; expected 3"
-                    )
-                if not math.isfinite(self._next_high_level_time):
-                    self._next_high_level_time = now + high_period
-                else:
-                    while self._next_high_level_time <= now:
-                        self._next_high_level_time += high_period
-
-            self.cmd[:] = np.clip(
-                self.high_level_action[:3],
-                -self.config.max_cmd,
-                self.config.max_cmd,
-            )
-        else:
+            if not self._real_cube_state_is_fresh():
+                self._stop_for_stale_cube_state()
+            else:
+                self._update_high_level_command(ang_vel, gravity_orientation, qj_obs, dqj_obs)
+        if not self.use_high_level_policy:
             self.cmd[:] = self._joystick_velocity_command()
+
+        self._publish_command_velocity_marker()
+        self._publish_current_velocity_marker()
 
         self.obs = np.concatenate(
             [
@@ -917,6 +1209,109 @@ class RealPolicyNode(Node):
 
         return self.obs
 
+    def run_unitree_sport_high_level_step(self):
+        self.counter += 1
+        self._update_sport_select_stop_from_remote()
+        self._update_high_level_toggle_from_remote()
+        ang_vel = np.asarray(self.low_state.imu_state.gyroscope, dtype=np.float32)
+        quat = self.low_state.imu_state.quaternion
+        gravity_orientation = get_gravity_orientation(quat)
+
+        for i in range(len(self.config.leg_joint2motor_idx)):
+            self.qj[i] = self.low_state.motor_state[self.config.leg_joint2motor_idx[i]].q
+            self.dqj[i] = self.low_state.motor_state[self.config.leg_joint2motor_idx[i]].dq
+        qj_obs = self.qj.copy()
+        dqj_obs = self.dqj.copy()
+        default_joint = [0.1, -0.1, 0.1, -0.1, 0.8, 0.8, 1, 1, -1.5, -1.5, -1.5, -1.5]
+        qj_obs = qj_obs - default_joint
+
+        if self.use_high_level_policy:
+            if not self._real_cube_state_is_fresh():
+                self._stop_for_stale_cube_state()
+            else:
+                self._update_high_level_command(ang_vel, gravity_orientation, qj_obs, dqj_obs)
+                self._publish_sport_move()
+        else:
+            self.cmd[:] = 0.0
+            self._publish_sport_stop_move()
+
+        self._publish_command_velocity_marker()
+        self._publish_current_velocity_marker()
+        self._record_policy_command_inputs(ang_vel)
+        return self.high_level_obs
+
+    def _update_high_level_command(
+        self, ang_vel, gravity_orientation, qj_obs, dqj_obs
+    ) -> None:
+        now = time.monotonic()
+        high_period = 1.0 / max(
+            float(self.get_parameter("high_level_rate_hz").value), 1e-6
+        )
+        if now >= self._next_high_level_time:
+            self.high_level_obs = self._build_high_level_observation(
+                ang_vel, gravity_orientation, qj_obs, dqj_obs
+            )
+            with torch.inference_mode():
+                self.high_level_action = (
+                    self.high_level_policy(
+                        torch.from_numpy(self.high_level_obs).unsqueeze(0)
+                    )
+                    .detach()
+                    .cpu()
+                    .numpy()
+                    .reshape(-1)
+                )
+            if self.high_level_action.size != 3:
+                raise RuntimeError(
+                    f"High-level policy returned {self.high_level_action.size} actions; expected 3"
+                )
+            if not math.isfinite(self._next_high_level_time):
+                self._next_high_level_time = now + high_period
+            else:
+                while self._next_high_level_time <= now:
+                    self._next_high_level_time += high_period
+
+        self.cmd[:] = np.clip(
+            self.high_level_action[:3],
+            -self.config.max_cmd,
+            self.config.max_cmd,
+        )
+        self._log_high_level_command(now)
+
+    def _log_high_level_command(self, now: float | None = None) -> None:
+        now = time.monotonic() if now is None else now
+        period_s = float(self.get_parameter("high_level_command_log_period_s").value)
+        if period_s <= 0.0 or now - self._last_high_level_command_log_time < period_s:
+            return
+        self._last_high_level_command_log_time = now
+        self.get_logger().info(
+            "High-level command "
+            f"enabled={self.use_high_level_policy} "
+            f"frame={self.get_parameter('policy_world_frame').value} "
+            f"raw_action={np.array2string(self.high_level_action[:3], precision=3, suppress_small=True)} "
+            f"cmd={np.array2string(self.cmd, precision=3, suppress_small=True)} "
+            f"sport_cmd={np.array2string(self._sport_command(), precision=3, suppress_small=True)} "
+            f"robot_xy={np.array2string(self.robot_pos_xy, precision=3, suppress_small=True)} "
+            f"cube_xy={np.array2string(self.cube_pos_xy, precision=3, suppress_small=True)} "
+            f"goal_xy={np.array2string(self.goal_xy, precision=3, suppress_small=True)} "
+            f"cube_to_goal={np.array2string(self.goal_xy - self.cube_pos_xy, precision=3, suppress_small=True)}"
+        )
+
+    def _record_policy_command_inputs(self, ang_vel) -> None:
+        self.L_base_vel_cmd_input_1.append(self.cmd[0])
+        self.L_base_vel_cmd_input_2.append(self.cmd[1])
+        self.L_base_vel_cmd_input_3.append(self.cmd[2])
+        self.L_base_lin_vel_input_1.append(self.robot_lin_vel_world_xy[0])
+        self.L_base_lin_vel_input_2.append(self.robot_lin_vel_world_xy[1])
+        self.L_base_lin_vel_input_3.append(self.base_lin_vel_input[2])
+        self.L_base_lin_vel_kalman_input_1.append(self.base_lin_vel_input[0])
+        self.L_base_lin_vel_kalman_input_2.append(self.base_lin_vel_input[1])
+        self.L_base_lin_vel_kalman_input_3.append(self.base_lin_vel_input[2])
+        self.L_base_lin_vel_kalman_input_4.append(self.base_lin_vel_input[3])
+        self.L_base_ang_vel_input_1.append(ang_vel[0])
+        self.L_base_ang_vel_input_2.append(ang_vel[1])
+        self.L_base_ang_vel_input_3.append(ang_vel[2])
+
     def _joystick_velocity_command(self) -> np.ndarray:
         command = np.array(
             [
@@ -933,26 +1328,55 @@ class RealPolicyNode(Node):
         button_name = str(self.get_parameter("high_level_toggle_button").value)
         button_index = self._remote_button_index(button_name)
         pressed = self.remote_controller.button[button_index] == 1
+        if pressed != self._last_high_level_toggle_pressed:
+            self.get_logger().info(
+                f"Remote {button_name.upper()} state changed to {int(pressed)} "
+                f"button_index={button_index} key_mask=0x{self.remote_controller.keys:04x}"
+            )
         if pressed and not self._last_high_level_toggle_pressed:
             if not bool(self.get_parameter("use_high_level_policy").value):
-                self.use_high_level_policy = False
-                self._next_high_level_time = -math.inf
+                self._set_high_level_policy_enabled(False)
                 self.get_logger().info(
                     f"Remote {button_name.upper()} pressed, but high-level policy is disabled by parameter"
                 )
                 self._last_high_level_toggle_pressed = pressed
                 return
-            self.use_high_level_policy = not self.use_high_level_policy
-            self._next_high_level_time = -math.inf
-            source = (
-                "PushCube high-level policy"
-                if self.use_high_level_policy
-                else "joystick"
-            )
+            self._set_high_level_policy_enabled(not self.use_high_level_policy)
+            if self._uses_unitree_sport_high_level():
+                source = (
+                    "PushCube high-level policy"
+                    if self.use_high_level_policy
+                    else "Unitree Sport StopMove"
+                )
+            else:
+                source = (
+                    "PushCube high-level policy"
+                    if self.use_high_level_policy
+                    else "joystick"
+                )
             self.get_logger().info(
-                f"Remote {button_name.upper()} pressed: low-level velocity command source is now {source}"
+                f"Remote {button_name.upper()} pressed: velocity command source is now {source}"
             )
         self._last_high_level_toggle_pressed = pressed
+
+    def _update_sport_select_stop_from_remote(self) -> None:
+        if not self._uses_unitree_sport_high_level():
+            return
+        if self._remote_button_index(str(self.get_parameter("high_level_toggle_button").value)) == KeyMap.select:
+            return
+
+        pressed = self.remote_controller.button[KeyMap.select] == 1
+        if pressed != self._last_select_stop_pressed:
+            self.get_logger().info(
+                f"Remote SELECT state changed to {int(pressed)} "
+                f"key_mask=0x{self.remote_controller.keys:04x}"
+            )
+        if pressed and not self._last_select_stop_pressed:
+            self._set_high_level_policy_enabled(False)
+            self.get_logger().info(
+                "Remote SELECT pressed: high-level policy disabled and Unitree Sport StopMove sent"
+            )
+        self._last_select_stop_pressed = pressed
 
     @staticmethod
     def _remote_button_index(button_name: str) -> int:
@@ -1046,6 +1470,10 @@ class RealPolicyNode(Node):
         return temp
 
     def _run_deploy_sequence(self) -> None:
+        if self._uses_unitree_sport_high_level():
+            self._run_unitree_sport_high_level_sequence()
+            return
+
         try:
             self.init_low_level_mode()
             self.wait_for_low_state()
@@ -1064,6 +1492,9 @@ class RealPolicyNode(Node):
                 self.Liste_t.append(time_ms)
                 time_ms += 20
                 if self.remote_controller.button[KeyMap.select] == 1:
+                    self.get_logger().info(
+                        "Remote SELECT pressed: stopping low-level policy loop and moving to ground"
+                    )
                     self.move_to_ground()
                     break
 
@@ -1071,6 +1502,50 @@ class RealPolicyNode(Node):
                 self._plot_analysis()
         except Exception as exc:
             self.get_logger().error(f"Policy deployment stopped because of an error: {exc}")
+
+    def _run_unitree_sport_high_level_sequence(self) -> None:
+        try:
+            self.wait_for_low_state()
+            self.get_logger().info("8] --------> High-level policy is running")
+            self.get_logger().info(
+                "             Unitree Sport mode remains responsible for low-level locomotion"
+            )
+            self.get_logger().info("             ###############################################")
+            self.get_logger().info("             # Press 'SELECT' to stop Sport commands       #")
+            self.get_logger().info("             ###############################################")
+
+            loop_period = 1.0 / max(
+                float(self.get_parameter("sport_move_publish_rate_hz").value),
+                1e-6,
+            )
+            self.Liste_t = []
+            time_ms = 0
+            while not self._stop_event.is_set():
+                self.run_unitree_sport_high_level_step()
+                time.sleep(loop_period)
+                self.Liste_t.append(time_ms)
+                time_ms += int(loop_period * 1000)
+                if (
+                    self.remote_controller.button[KeyMap.select] == 1
+                    and self._remote_button_index(
+                        str(self.get_parameter("high_level_toggle_button").value)
+                    )
+                    != KeyMap.select
+                ):
+                    self.get_logger().info(
+                        "Remote SELECT pressed: stopping Unitree Sport high-level loop"
+                    )
+                    self._publish_sport_stop_move()
+                    break
+
+            if bool(self.get_parameter("plot_on_exit").value):
+                self._plot_analysis()
+        except Exception as exc:
+            self.get_logger().error(
+                f"High-level Unitree Sport policy stopped because of an error: {exc}"
+            )
+        finally:
+            self._publish_sport_stop_move()
 
     def _run_fake_observation_sequence(self) -> None:
         try:
@@ -1123,6 +1598,8 @@ class RealPolicyNode(Node):
         self._stop_event.set()
         if self._worker_thread is not None and self._worker_thread.is_alive():
             self._worker_thread.join(timeout=1.0)
+        if self._uses_unitree_sport_high_level():
+            self._publish_sport_stop_move()
         return super().destroy_node()
 
 

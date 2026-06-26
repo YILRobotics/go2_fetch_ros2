@@ -34,7 +34,12 @@ def generate_launch_description():
                 name="inekf_odom",
                 output="screen",
                 emulate_tty=True,
-                parameters=[{"robot_freq": 20.0}], # should be 500.0
+                parameters=[
+                    {
+                        "robot_freq": 500.0,
+                        "wait_for_all_feet_contact": False,
+                    }
+                ], # robot_freq should be 500.0
             ),
         ]
     )

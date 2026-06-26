@@ -16,7 +16,7 @@ def generate_launch_description() -> LaunchDescription:
     default_params = os.path.join(package_share, 'config', 'fetch_params.yaml')
 
     full_state_publisher_launch_file = PathJoinSubstitution(
-        [FindPackageShare("fetch"), "launch", "inekf_odometry.launch.py"]
+        [FindPackageShare("fetch"), "launch", "odometry_inekf.launch.py"]
     )
 
     return LaunchDescription([
@@ -31,7 +31,7 @@ def generate_launch_description() -> LaunchDescription:
             ],
         ),
         TimerAction(
-            period=14.0,
+            period=5.0,
             actions=[
                 IncludeLaunchDescription(
                     PythonLaunchDescriptionSource([full_state_publisher_launch_file]),

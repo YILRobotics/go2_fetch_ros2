@@ -20,17 +20,14 @@ cube_tracker_node:
     # For YOLOE .pt open-vocabulary models, these are passed to model.set_classes(...).
     # For exported .onnx models, prompts/classes are normally baked into the model.
     yolo_classes: ["box"]
-    # Minimum confidence for a YOLO candidate.
     conf_threshold: 0.1
 
     # Tracker throughput cap (timer frequency in Hz).
     processing_rate_hz: 25.0
-    # Intermediate pipeline log throttle (set 0 to disable extra stage logs).
     pipeline_log_rate_hz: 2.0
 
     # Optional HSV pre-mask before YOLO (keeps green/blue regions only).
     enable_hsv_pre_mask: false
-    # Publish the exact image sent to YOLO after optional HSV masking.
     publish_pre_yolo_image: false
     # HSV bounds for green and blue masks: [H, S, V] in OpenCV ranges.
     hsv_green_lower: [35, 40, 40]
@@ -39,7 +36,7 @@ cube_tracker_node:
     hsv_blue_upper: [135, 255, 255]
 
     # Max sampled mask pixels used for point cloud centroiding.
-    max_mask_samples: 250
+    max_mask_samples: 200
     # Minimum valid 3D points required after filtering.
     min_inlier_points: 10
     # Accepted depth range in meters.
@@ -52,7 +49,7 @@ cube_tracker_node:
     # Time window used for velocity fitting.
     velocity_window_s: 0.6
     # First-order low-pass cutoff for published cube XYZ state; <= 0 disables it.
-    cube_state_low_pass_cutoff_hz: 6.0
+    cube_state_low_pass_cutoff_hz: 5.0
     # Physical RViz marker dimensions [x, y, z] in meters.
     cube_dimensions: [0.16, 0.16, 0.16]
     # Offset added to detected cube position before publishing state/marker [x, y, z] in meters.
@@ -82,14 +79,15 @@ policy_node:
     fake_cube_observation_mode: false
     fake_cube_position_xy: [0.3, 0.0]
     fake_cube_velocity_xy: [0.0, 0.0]
+    cube_state_timeout_s: 0.5
     fake_cube_publish_period_s: 0.05
     cube_marker_topic: /go2_fetch/cube_marker
     cube_dimensions: [0.16, 0.16, 0.16]
     # Independent output gate. Fake observation mode always overrides this to false.
     send_commands: true
     # Master high-level permission. false = always joystick/manual.
-    # true = high-level is allowed, starts disabled, and X toggles it while running.
-    use_high_level_policy: false
+    # true = high-level is allowed, starts disabled, and high_level_toggle_button toggles it while running.
+    use_high_level_policy: true
     high_level_toggle_button: X
     fake_observation_seed: 0
     fake_observation_min: -1.0
@@ -98,7 +96,11 @@ policy_node:
     
     # Runtime behavior copied from deploy_real_isaaclab.py.
     start_policy_on_startup: true
-    auto_switch_to_low_level: true
+    # hierarchical_lowcmd = current full stack, publishes /lowcmd.
+    # unitree_sport_high_level = only run the high-level policy and send
+    # Unitree Sport Move commands while Unitree low-level software is active.
+    control_mode: unitree_sport_high_level # options: hierarchical_lowcmd or unitree_sport_high_level
+    #auto_switch_to_low_level: true
     wait_for_start_button: true
     wait_for_a_button: true
     plot_on_exit: false
@@ -106,6 +108,7 @@ policy_node:
     # PushCube-4L low-level policy runs at 50 Hz; high-level runs at 15 Hz.
     model_loop_period_s: 0.02
     high_level_rate_hz: 15.0
+    high_level_command_log_period_s: 1.0
     startup_sleep_s: 0.001
 
     # ROS bridge topics used by the Kalman/inekf helper.
@@ -117,6 +120,7 @@ policy_node:
     policy_world_frame: odom
     lf_foot_frame: FL_foot
     lf_foot_tf_timeout_s: 0.02
+    cube_state_tf_timeout_s: 0.05
     # nav_msgs/Odometry twist is normally expressed in child_frame_id.
     robot_twist_in_body_frame: true
     inekf_lowstate_topic: /inekf_lowstate
@@ -126,8 +130,14 @@ policy_node:
     msg_type: go
     imu_type: pelvis
     lowcmd_topic: /lowcmd
-    lowstate_topic: /lf/lowstate
+    lowstate_topic: /lowstate
     sportstate_topic: /sportmodestate
+    sport_request_topic: /api/sport/request
+    sport_move_publish_rate_hz: 15.0
+    sport_stop_on_disable: true
+    sport_command_log_every_n_steps: 50
+    # Maps trained high-level command convention to Unitree Sport Move(x, y, yaw).
+    sport_command_scale: [-1.0, 1.0, 1.0]
     policy_path: ""
     policy_base_dir: /home/ferdinand/fetchrobot/ferdinand/go2_fetch_rl
     high_level_policy_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/unitree_go2_pushcube_4l/2026-05-15_02-52-05_cam_6/policy.pt
@@ -149,8 +159,8 @@ policy_node:
     # - joint 9 RR_hip goes to motor 2
     # - joint 10 RR_thigh goes to motor 11
     # - joint 11 RR_calf goes to motor 8
-    torque_limits: [18.0, 18.0, 16.0, 16.0, 18.0, 18.0, 16.0, 18.0, 18.0, 18.0, 16.0, 18.0]
-    # torque_limits: [20.0, 20.0, 18.0, 18.0, 20.0, 20.0, 18.0, 20.0, 20.0, 20.0, 18.0, 20.0] # higher
+    # torque_limits: [18.0, 18.0, 16.0, 16.0, 18.0, 18.0, 16.0, 18.0, 18.0, 18.0, 16.0, 18.0]
+    torque_limits: [20.0, 20.0, 18.0, 18.0, 20.0, 20.0, 18.0, 20.0, 20.0, 20.0, 18.0, 20.0] # higher
     weak_motor: []
     arm_waist_joint2motor_idx: []
     arm_waist_kps: []
@@ -166,7 +176,9 @@ policy_node:
     high_level_num_obs: 48
     low_level_num_obs: 45
     num_obs: 45
-    max_cmd: [0.6, 0.5, 0.8] # joy stick command limits for [x, y, yaw]
+    max_cmd: [0.3, 0.3, 0.5] # joy stick command limits for [x, y, yaw]
+
+
 state_machine_node:
   ros__parameters:
     # IO topics.

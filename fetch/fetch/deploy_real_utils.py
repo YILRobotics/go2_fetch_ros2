@@ -39,9 +39,11 @@ class RemoteController:
         self.rx = 0
         self.ry = 0
         self.button = [0] * 16
+        self.keys = 0
 
     def set(self, data):
-        keys = struct.unpack("H", data[2:4])[0]
+        keys = struct.unpack("<H", data[2:4])[0]
+        self.keys = keys
         for i in range(16):
             self.button[i] = (keys & (1 << i)) >> i
         self.lx = struct.unpack("f", data[4:8])[0]

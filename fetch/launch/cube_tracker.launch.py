@@ -125,7 +125,7 @@ def generate_launch_description() -> LaunchDescription:
 
 
     full_state_publisher_launch_file = PathJoinSubstitution(
-        [FindPackageShare("fetch"), "launch", "inekf_odometry.launch.py"]
+        [FindPackageShare("fetch"), "launch", "odometry_inekf.launch.py"]
     )
 
     base_to_camera_static_tf_launch_file = Node(

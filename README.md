@@ -17,6 +17,25 @@ Wifi
 ssh unitree@192.168.11.8  # password 123
 ```
 
+for compressed image : sudo apt install ros-humble-image-transport-plugins
+
+Make engine file of policy:
+
+cd /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/unitree_go2_velocity_4l/2026-04-05_12-01-56_walk_2
+
+/usr/src/tensorrt/bin/trtexec \
+    --onnx=policy.onnx \
+    --saveEngine=policy.engine
+
+  For the pushcube model too:
+
+  cd /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/unitree_go2_pushcube_4l/2026-05-15_02-52-05_cam_6
+
+  /usr/src/tensorrt/bin/trtexec \
+    --onnx=policy.onnx \
+    --saveEngine=policy.engine
+
+
 run ros2 on computer
 ```bash
 export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="lo" priority="default" multicast="default" /></Interfaces></General></Domain></CycloneDDS>'
