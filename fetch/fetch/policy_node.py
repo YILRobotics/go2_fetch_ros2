@@ -109,18 +109,39 @@ class RealPolicyNode(Node):
             self._worker_thread.start()
 
     def _declare_parameters(self) -> None:
-        self.declare_parameter("network_interface", "")
-        self.declare_parameter("dds_domain_id", 0)
-        # self.declare_parameter("project_root", "/home/ferdinand/unitree/Deploy_SimToReal_RL_Go2")
-        # self.declare_parameter(
-        #     "unitree_sdk_paths",
-        #     Parameter.Type.STRING_ARRAY,
-        # )
+        # Startup, operating mode, and command gates.
         self.declare_parameter("start_policy_on_startup", True)
         self.declare_parameter("control_mode", CONTROL_MODE_HIERARCHICAL_LOWCMD)
-        self.declare_parameter("fake_observations_mode", True)
+        self.declare_parameter("auto_switch_to_low_level", True)
         self.declare_parameter("send_commands", False)
         self.declare_parameter("use_high_level_policy", True)
+        self.declare_parameter("wait_for_start_button", True)
+        self.declare_parameter("wait_for_a_button", True)
+
+        # DDS connection.
+        self.declare_parameter("network_interface", "")
+        self.declare_parameter("dds_domain_id", 0)
+
+        # Remote controls.
+        self.declare_parameter("high_level_toggle_button", "X")
+        self.declare_parameter("goal_set_button", "Y")
+        self.declare_parameter("cube_recovery_toggle_button", "B")
+
+        # Goal definition and completion condition.
+        self.declare_parameter("goal_xy", [0.0, 0.0])
+        self.declare_parameter("goal_radius", 0.2)
+        self.declare_parameter("cube_goal_stop_radius", 0.3)
+        self.declare_parameter("cube_goal_hold_s", 0.6)
+        self.declare_parameter("robot_goal_clear_radius", 0.35)
+
+        # Cube-loss recovery rotation.
+        self.declare_parameter("cube_state_timeout_s", 0.5)
+        self.declare_parameter("cube_recovery_angular_cmd", 0.5)
+        self.declare_parameter("cube_recovery_front_angle_deg", 20.0)
+        self.declare_parameter("cube_recovery_max_rotation_deg", 360.0)
+
+        # Fake observation modes.
+        self.declare_parameter("fake_observations_mode", True)
         self.declare_parameter("fake_observation_seed", 0)
         self.declare_parameter("fake_observation_min", -1.0)
         self.declare_parameter("fake_observation_max", 1.0)
@@ -128,54 +149,35 @@ class RealPolicyNode(Node):
         self.declare_parameter("fake_cube_observation_mode", False)
         self.declare_parameter("fake_cube_position_xy", [0.8, 0.0])
         self.declare_parameter("fake_cube_velocity_xy", [0.0, 0.0])
-        self.declare_parameter("cube_state_timeout_s", 0.5)
         self.declare_parameter("fake_cube_publish_period_s", 0.05)
-        self.declare_parameter("cube_marker_topic", "/go2_fetch/cube_marker")
-        self.declare_parameter("cube_dimensions", [0.16, 0.16, 0.16])
-        self.declare_parameter("command_velocity_marker_topic", "/go2_fetch/command_velocity_marker")
-        self.declare_parameter("current_velocity_marker_topic", "/go2_fetch/current_velocity_marker")
-        self.declare_parameter("command_velocity_marker_frame", "base")
-        self.declare_parameter("command_velocity_marker_z_offset", 0.25)
-        self.declare_parameter("command_velocity_marker_scale", 0.25)
-        self.declare_parameter("auto_switch_to_low_level", True)
-        self.declare_parameter("wait_for_start_button", True)
-        self.declare_parameter("wait_for_a_button", True)
-        self.declare_parameter("high_level_toggle_button", "X")
-        self.declare_parameter("plot_on_exit", False)
-        self.declare_parameter("analysis_pdf_path", "analyse_robot.pdf")
+
+        # ROS topics and coordinate frames.
         self.declare_parameter("kalman_odom_topic", "/odometry/filtered")
         self.declare_parameter("cube_state_topic", "/go2_fetch/cube_state")
-        self.declare_parameter("goal_xy", [0.0, 0.0])
-        self.declare_parameter("goal_radius", 0.2)
+        self.declare_parameter("inekf_lowstate_topic", "/inekf_lowstate")
+        self.declare_parameter("lowcmd_topic", "/lowcmd")
+        self.declare_parameter("lowstate_topic", "/lowstate")
+        self.declare_parameter("sportstate_topic", "/sportmodestate")
+        self.declare_parameter("sport_request_topic", "/api/sport/request")
         self.declare_parameter("policy_world_frame", "odom")
         self.declare_parameter("lf_foot_frame", "FL_foot")
         self.declare_parameter("lf_foot_tf_timeout_s", 0.02)
         self.declare_parameter("cube_state_tf_timeout_s", 0.05)
         self.declare_parameter("robot_twist_in_body_frame", True)
-        self.declare_parameter("inekf_lowstate_topic", "/inekf_lowstate")
         self.declare_parameter("lowstate_publish_period_s", 0.005)
-        self.declare_parameter("model_loop_period_s", 0.02)
-        self.declare_parameter("startup_sleep_s", 0.001)
-        self.declare_parameter("motor_log_every_n_steps", 50)
-        self.declare_parameter("high_level_command_log_period_s", 1.0)
 
-        self.declare_parameter("control_dt", 0.005)
-        self.declare_parameter("msg_type", "go")
-        self.declare_parameter("imu_type", "pelvis")
-        self.declare_parameter(
-            "weak_motor",
-            Parameter.Type.INTEGER_ARRAY,
-        )
-        self.declare_parameter("lowcmd_topic", "/lowcmd")
-        self.declare_parameter("lowstate_topic", "/lowstate")
-        self.declare_parameter("sportstate_topic", "/sportmodestate")
-        self.declare_parameter("sport_request_topic", "/api/sport/request")
-        self.declare_parameter("sport_move_publish_rate_hz", 15.0)
-        self.declare_parameter("sport_stop_on_disable", True)
-        self.declare_parameter("sport_command_log_every_n_steps", 50)
-        self.declare_parameter("sport_command_scale", [-1.0, 1.0, 1.0])
-        self.declare_parameter("policy_path", "")
-        self.declare_parameter("policy_base_dir", "/home/ferdinand/fetchrobot/ferdinand/go2_fetch_rl")
+        # RViz visualization.
+        self.declare_parameter("cube_marker_topic", "/go2_fetch/cube_marker")
+        self.declare_parameter("cube_dimensions", [0.16, 0.16, 0.16])
+        self.declare_parameter("goal_marker_topic", "/go2_fetch/goal_marker")
+        self.declare_parameter("goal_marker_publish_period_s", 0.2)
+        self.declare_parameter("command_velocity_marker_topic", "/go2_fetch/command_velocity_marker")
+        self.declare_parameter("current_velocity_marker_topic", "/go2_fetch/current_velocity_marker")
+        self.declare_parameter("command_velocity_marker_frame", "base")
+        self.declare_parameter("command_velocity_marker_z_offset", 0.25)
+        self.declare_parameter("command_velocity_marker_scale", 0.25)
+
+        # Policy models and inference rates.
         self.declare_parameter(
             "high_level_policy_path",
             "logs/rsl_rl/unitree_go2_pushcube_4l/2026-05-15_02-52-05_cam_6/exported/policy.pt",
@@ -184,14 +186,39 @@ class RealPolicyNode(Node):
             "low_level_policy_path",
             "logs/rsl_rl/unitree_go2_velocity_4l/2026-04-05_12-01-56_walk_2/exported/policy.pt",
         )
+        self.declare_parameter("model_loop_period_s", 0.02)
         self.declare_parameter("high_level_rate_hz", 15.0)
         self.declare_parameter("high_level_num_obs", 48)
         self.declare_parameter("low_level_num_obs", 45)
+
+        # Unitree Sport high-level control.
+        self.declare_parameter("sport_move_publish_rate_hz", 15.0)
+        self.declare_parameter("sport_stop_on_disable", True)
+        self.declare_parameter("sport_command_log_every_n_steps", 50)
+        self.declare_parameter("sport_command_scale", [-1.0, 1.0, 1.0])
+
+        # Low-level policy interface and scaling.
+        self.declare_parameter("control_dt", 0.005)
+        self.declare_parameter("msg_type", "go")
+        self.declare_parameter("imu_type", "pelvis")
+        self.declare_parameter("ang_vel_scale", 0.2)
+        self.declare_parameter("dof_pos_scale", 1.0)
+        self.declare_parameter("dof_vel_scale", 0.05)
+        self.declare_parameter("action_scale", 0.25)
+        self.declare_parameter("cmd_scale", [0.8, 0.8, 1.0])
+        self.declare_parameter("num_actions", 12)
+        self.declare_parameter("num_obs", 45)
+        self.declare_parameter("max_cmd", [1.0, 1.0, 1.0])
+
+        # Leg motor mapping, gains, and limits.
         self.declare_parameter("leg_joint2motor_idx", [3, 0, 9, 6, 4, 1, 10, 7, 5, 2, 11, 8])
         self.declare_parameter("default_angles", [-0.1, 0.8, -1.5, 0.1, 0.8, -1.5, -0.1, 1.0, -1.5, 0.1, 1.0, -1.5])
         self.declare_parameter("kps", [25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0])
         self.declare_parameter("kds", [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5])
         self.declare_parameter("torque_limits", [23.7, 23.7, 35.55, 23.7, 23.7, 35.55, 23.7, 23.7, 35.55, 23.7, 23.7, 35.55])
+        self.declare_parameter("weak_motor", Parameter.Type.INTEGER_ARRAY)
+
+        # Optional arm and waist motors.
         self.declare_parameter(
             "arm_waist_joint2motor_idx",
             Parameter.Type.INTEGER_ARRAY,
@@ -208,14 +235,15 @@ class RealPolicyNode(Node):
             "arm_waist_target",
             Parameter.Type.DOUBLE_ARRAY,
         )
-        self.declare_parameter("ang_vel_scale", 0.2)
-        self.declare_parameter("dof_pos_scale", 1.0)
-        self.declare_parameter("dof_vel_scale", 0.05)
-        self.declare_parameter("action_scale", 0.25)
-        self.declare_parameter("cmd_scale", [0.8, 0.8, 1.0])
-        self.declare_parameter("num_actions", 12)
-        self.declare_parameter("num_obs", 45)
-        self.declare_parameter("max_cmd", [1.0, 1.0, 1.0])
+
+        # Diagnostics and analysis output.
+        self.declare_parameter("startup_sleep_s", 0.001)
+        self.declare_parameter("motor_log_every_n_steps", 50)
+        self.declare_parameter("cycle_timing_log_every_n_steps", 50)
+        self.declare_parameter("torque_limit_log_period_s", 1.0)
+        self.declare_parameter("high_level_command_log_period_s", 1.0)
+        self.declare_parameter("plot_on_exit", False)
+        self.declare_parameter("analysis_pdf_path", "analyse_robot.png")
 
     def _control_mode_from_parameter(self) -> str:
         control_mode = str(self.get_parameter("control_mode").value)
@@ -285,7 +313,6 @@ class RealPolicyNode(Node):
             weak_motor=self._array_parameter("weak_motor", Parameter.Type.INTEGER_ARRAY),
             lowcmd_topic=str(self.get_parameter("lowcmd_topic").value),
             lowstate_topic=str(self.get_parameter("lowstate_topic").value),
-            policy_path=str(self.get_parameter("policy_path").value),
             leg_joint2motor_idx=list(self.get_parameter("leg_joint2motor_idx").value),
             kps=list(self.get_parameter("kps").value),
             kds=list(self.get_parameter("kds").value),
@@ -361,6 +388,11 @@ class RealPolicyNode(Node):
             self.get_parameter("cube_marker_topic").value,
             10,
         )
+        self.goal_marker_publisher = self.create_publisher(
+            Marker,
+            self.get_parameter("goal_marker_topic").value,
+            10,
+        )
         self.command_velocity_marker_publisher = self.create_publisher(
             Marker,
             self.get_parameter("command_velocity_marker_topic").value,
@@ -374,6 +406,10 @@ class RealPolicyNode(Node):
         self.fake_cube_publish_timer = self.create_timer(
             float(self.get_parameter("fake_cube_publish_period_s").value),
             self._publish_fake_cube_state,
+        )
+        self.goal_marker_publish_timer = self.create_timer(
+            float(self.get_parameter("goal_marker_publish_period_s").value),
+            self._publish_goal_marker,
         )
 
     def _initialize_controller_state(self) -> None:
@@ -414,28 +450,38 @@ class RealPolicyNode(Node):
             self._apply_fake_cube_observation()
         self.goal_xy = np.array(self.get_parameter("goal_xy").value, dtype=np.float32)
         self.goal_radius = float(self.get_parameter("goal_radius").value)
+        self._goal_condition_reached = False
+        self._cube_goal_enter_time = -math.inf
+        self._last_robot_odom_time = -math.inf
         self._next_high_level_time = -math.inf
         self._last_high_level_toggle_pressed = False
+        self._last_goal_set_button_pressed = False
+        self._last_cube_recovery_toggle_pressed = False
+        self._cube_tracking_lost = False
+        self._cube_recovery_active = False
+        self._cube_recovery_direction = 1.0
+        self._cube_recovery_last_yaw = self.robot_yaw
+        self._cube_recovery_rotation_rad = 0.0
         self._last_select_stop_pressed = False
         self._sport_stop_sent = False
         self._last_high_level_command_log_time = -math.inf
+        self._last_torque_limit_log_time = -math.inf
+        self._torque_limit_events = {}
+        self.policy_cycle_times_ms = []
 
         self.dt = 0.002
         self.startPos = [0.0] * 12
         self.duration_1 = 500
         self.duration_2 = 500
         self.duration_3 = 1000
-        self.duration_4 = 900
         self.percent_1 = 0
         self.percent_2 = 0
         self.percent_3 = 0
-        self.percent_4 = 0
         self.firstRun = True
         self.counter = 0
 
         self._targetPos_1 = [0.0, 1.36, -2.65, 0.0, 1.36, -2.65, -0.2, 1.36, -2.65, 0.2, 1.36, -2.65]
         self._targetPos_2 = [-0.1, 0.8, -1.5, 0.1, 0.8, -1.5, -0.1, 1, -1.5, 0.1, 1, -1.5]
-        self._targetPos_3 = self._targetPos_2
 
         window_size = 20
         self.vx_window = [0] * window_size
@@ -455,11 +501,13 @@ class RealPolicyNode(Node):
         self.L_base_ang_vel_input_1 = []
         self.L_base_ang_vel_input_2 = []
         self.L_base_ang_vel_input_3 = []
+        self.L_foot_force_fr = []
+        self.L_foot_force_fl = []
+        self.L_foot_force_rr = []
+        self.L_foot_force_rl = []
 
     def _resolve_policy_path(self, parameter_name: str) -> Path:
         path = Path(str(self.get_parameter(parameter_name).value)).expanduser()
-        if not path.is_absolute():
-            path = Path(self.get_parameter("policy_base_dir").value).expanduser() / path
         if not path.is_file():
             raise FileNotFoundError(f"{parameter_name} does not exist: {path}")
         return path
@@ -523,6 +571,7 @@ class RealPolicyNode(Node):
         self.velocity = sport_state_msg.velocity
 
     def _kalman_odom_callback(self, msg: Odometry) -> None:
+        self._last_robot_odom_time = time.monotonic()
         self.base_lin_vel_input[0] = msg.twist.twist.linear.x
         self.base_lin_vel_input[1] = msg.twist.twist.linear.y
         self.base_lin_vel_input[2] = msg.twist.twist.linear.z
@@ -669,6 +718,33 @@ class RealPolicyNode(Node):
         marker.color.a = 0.6
         self.fake_cube_marker_publisher.publish(marker)
 
+    def _publish_goal_marker(self) -> None:
+        if not self._goal_condition_reached:
+            if self._cube_state_is_current():
+                self._goal_condition_reached = self._high_level_goal_stop_condition()[0]
+            else:
+                self._cube_goal_enter_time = -math.inf
+        radius = abs(float(self.get_parameter("cube_goal_stop_radius").value))
+        marker = Marker()
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.header.frame_id = str(self.get_parameter("policy_world_frame").value)
+        marker.ns = "goal_region"
+        marker.id = 0
+        marker.type = Marker.CYLINDER
+        marker.action = Marker.ADD
+        marker.pose.position.x = float(self.goal_xy[0])
+        marker.pose.position.y = float(self.goal_xy[1])
+        marker.pose.position.z = 0.01
+        marker.pose.orientation.w = 1.0
+        marker.scale.x = 2.0 * radius
+        marker.scale.y = 2.0 * radius
+        marker.scale.z = 0.02
+        marker.color.r = 0.0 if self._goal_condition_reached else 1.0
+        marker.color.g = 1.0 if self._goal_condition_reached else 0.0
+        marker.color.b = 0.0
+        marker.color.a = 0.45
+        self.goal_marker_publisher.publish(marker)
+
     def _publish_command_velocity_marker(self) -> None:
         marker = Marker()
         marker.header.stamp = self.get_clock().now().to_msg()
@@ -768,7 +844,13 @@ class RealPolicyNode(Node):
 
     def _limit_motor_command_torque(self, motor_cmd, motor_index: int, limit: float) -> None:
         if self.low_state is None or motor_index >= len(self.low_state.motor_state):
-            set_motor_cmd_torque(motor_cmd, np.clip(motor_cmd.tau, -limit, limit))
+            requested_torque = float(motor_cmd.tau)
+            clamped_torque = float(np.clip(requested_torque, -limit, limit))
+            if clamped_torque != requested_torque:
+                self._record_torque_limit(
+                    motor_index, requested_torque, clamped_torque
+                )
+            set_motor_cmd_torque(motor_cmd, clamped_torque)
             return
 
         motor_state = self.low_state.motor_state[motor_index]
@@ -789,6 +871,8 @@ class RealPolicyNode(Node):
         if clamped_torque == estimated_torque:
             return
 
+        self._record_torque_limit(motor_index, estimated_torque, clamped_torque)
+
         # Prefer changing q because this node uses position control. If kp is
         # zero, fall back to dq, then tau.
         if abs(kp) > 1e-6:
@@ -801,6 +885,35 @@ class RealPolicyNode(Node):
             set_motor_cmd_velocity(motor_cmd, dq_limited)
         else:
             set_motor_cmd_torque(motor_cmd, clamped_torque)
+
+    def _record_torque_limit(
+        self, motor_index: int, requested_torque: float, clamped_torque: float
+    ) -> None:
+        previous = self._torque_limit_events.get(motor_index)
+        hit_count = 1 if previous is None else previous[2] + 1
+        self._torque_limit_events[motor_index] = (
+            requested_torque,
+            clamped_torque,
+            hit_count,
+        )
+
+        now = time.monotonic()
+        log_period = max(
+            0.0, float(self.get_parameter("torque_limit_log_period_s").value)
+        )
+        if now - self._last_torque_limit_log_time < log_period:
+            return
+
+        event_text = "; ".join(
+            f"motor {index}: {requested:.2f} -> {clamped:.2f} Nm "
+            f"({count} hits)"
+            for index, (requested, clamped, count) in sorted(
+                self._torque_limit_events.items()
+            )
+        )
+        print(f"\033[38;5;208mTorque limits reached: {event_text}\033[0m")
+        self._torque_limit_events.clear()
+        self._last_torque_limit_log_time = now
 
     def send_cmd(self, cmd) -> None:
         if not self.commands_enabled:
@@ -853,6 +966,8 @@ class RealPolicyNode(Node):
     def _set_high_level_policy_enabled(self, enabled: bool) -> None:
         self.use_high_level_policy = bool(enabled)
         self._next_high_level_time = -math.inf
+        if self.use_high_level_policy:
+            self._cube_recovery_active = False
         if not self.use_high_level_policy:
             self.cmd[:] = 0.0
             if self._uses_unitree_sport_high_level():
@@ -880,10 +995,55 @@ class RealPolicyNode(Node):
         return False
 
     def _stop_for_stale_cube_state(self) -> None:
+        self._cube_goal_enter_time = -math.inf
+        self._cube_tracking_lost = True
         self._set_high_level_policy_enabled(False)
         self._publish_command_velocity_marker()
         if self._uses_unitree_sport_high_level():
             self._publish_sport_stop_move()
+
+    def _high_level_goal_stop_condition(self) -> tuple[bool, float, float]:
+        now = time.monotonic()
+        cube_distance = float(np.linalg.norm(self.cube_pos_xy - self.goal_xy))
+        robot_distance = float(np.linalg.norm(self.robot_pos_xy - self.goal_xy))
+        cube_stop_radius = abs(
+            float(self.get_parameter("cube_goal_stop_radius").value)
+        )
+        robot_clear_radius = abs(
+            float(self.get_parameter("robot_goal_clear_radius").value)
+        )
+        cube_in_goal = cube_distance <= cube_stop_radius
+        if cube_in_goal:
+            if not math.isfinite(self._cube_goal_enter_time):
+                self._cube_goal_enter_time = now
+        else:
+            self._cube_goal_enter_time = -math.inf
+        hold_s = max(float(self.get_parameter("cube_goal_hold_s").value), 0.0)
+        cube_hold_complete = (
+            cube_in_goal and now - self._cube_goal_enter_time >= hold_s
+        )
+        should_stop = (
+            cube_hold_complete
+            and robot_distance > robot_clear_radius
+        )
+        return should_stop, cube_distance, robot_distance
+
+    def _stop_high_level_if_goal_reached(self) -> bool:
+        should_stop, cube_distance, robot_distance = (
+            self._high_level_goal_stop_condition()
+        )
+        if not should_stop:
+            return False
+        self._goal_condition_reached = True
+        self._publish_goal_marker()
+        self._set_high_level_policy_enabled(False)
+        self.get_logger().info(
+            "High-level policy stopped: cube reached goal while robot base is clear "
+            f"cube_goal_distance={cube_distance:.3f}m "
+            f"robot_goal_distance={robot_distance:.3f}m "
+            f"cube_hold={float(self.get_parameter('cube_goal_hold_s').value):.3f}s"
+        )
+        return True
 
     def _log_sport_command(self) -> None:
         log_every = int(self.get_parameter("sport_command_log_every_n_steps").value)
@@ -1067,21 +1227,8 @@ class RealPolicyNode(Node):
                     set_motor_cmd_gains(self.low_cmd.motor_cmd[i], 60.0, 5.0)
                     set_motor_cmd_torque(self.low_cmd.motor_cmd[i], 0.0)
 
-            if self.percent_1 == 1 and self.percent_2 == 1 and self.percent_3 == 1 and self.percent_4 <= 1:
-                self.percent_4 += 1.0 / self.duration_4
-                self.percent_4 = min(self.percent_4, 1)
-                for i in range(12):
-                    set_motor_cmd_position(
-                        self.low_cmd.motor_cmd[i],
-                        (1 - self.percent_4) * self._targetPos_2[i]
-                        + self.percent_4 * self._targetPos_3[i],
-                    )
-                    set_motor_cmd_velocity(self.low_cmd.motor_cmd[i], 0)
-                    set_motor_cmd_gains(self.low_cmd.motor_cmd[i], 60.0, 5.0)
-                    set_motor_cmd_torque(self.low_cmd.motor_cmd[i], 0.0)
-
             self.send_cmd(self.low_cmd)
-            if self.percent_4 == 1.0 or self.count == 2500000000:
+            if self.percent_3 == 1.0 or self.count == 2500000000:
                 done = True
             time.sleep(float(self.get_parameter("startup_sleep_s").value))
 
@@ -1128,6 +1275,7 @@ class RealPolicyNode(Node):
     def run_policy_step(self):
         self.counter += 1
         self._update_high_level_toggle_from_remote()
+        self._update_goal_from_remote()
         ang_vel = np.asarray(self.low_state.imu_state.gyroscope, dtype=np.float32)
         quat = self.low_state.imu_state.quaternion
         gravity_orientation = get_gravity_orientation(quat)
@@ -1143,9 +1291,15 @@ class RealPolicyNode(Node):
         if self.use_high_level_policy:
             if not self._real_cube_state_is_fresh():
                 self._stop_for_stale_cube_state()
+            elif self._stop_high_level_if_goal_reached():
+                pass
             else:
+                self._cube_tracking_lost = False
                 self._update_high_level_command(ang_vel, gravity_orientation, qj_obs, dqj_obs)
-        if not self.use_high_level_policy:
+        self._update_cube_recovery_toggle_from_remote()
+        if self._cube_recovery_active:
+            self._update_cube_recovery_command()
+        elif not self.use_high_level_policy:
             self.cmd[:] = self._joystick_velocity_command()
 
         self._publish_command_velocity_marker()
@@ -1193,19 +1347,7 @@ class RealPolicyNode(Node):
         self.send_cmd(self.low_cmd)
         self._log_policy_motor_outputs()
 
-        self.L_base_vel_cmd_input_1.append(self.cmd[0])
-        self.L_base_vel_cmd_input_2.append(self.cmd[1])
-        self.L_base_vel_cmd_input_3.append(self.cmd[2])
-        self.L_base_lin_vel_input_1.append(self.robot_lin_vel_world_xy[0])
-        self.L_base_lin_vel_input_2.append(self.robot_lin_vel_world_xy[1])
-        self.L_base_lin_vel_input_3.append(self.base_lin_vel_input[2])
-        self.L_base_lin_vel_kalman_input_1.append(self.base_lin_vel_input[0])
-        self.L_base_lin_vel_kalman_input_2.append(self.base_lin_vel_input[1])
-        self.L_base_lin_vel_kalman_input_3.append(self.base_lin_vel_input[2])
-        self.L_base_lin_vel_kalman_input_4.append(self.base_lin_vel_input[3])
-        self.L_base_ang_vel_input_1.append(ang_vel[0])
-        self.L_base_ang_vel_input_2.append(ang_vel[1])
-        self.L_base_ang_vel_input_3.append(ang_vel[2])
+        self._record_policy_command_inputs(ang_vel)
 
         return self.obs
 
@@ -1213,6 +1355,7 @@ class RealPolicyNode(Node):
         self.counter += 1
         self._update_sport_select_stop_from_remote()
         self._update_high_level_toggle_from_remote()
+        self._update_goal_from_remote()
         ang_vel = np.asarray(self.low_state.imu_state.gyroscope, dtype=np.float32)
         quat = self.low_state.imu_state.quaternion
         gravity_orientation = get_gravity_orientation(quat)
@@ -1228,10 +1371,20 @@ class RealPolicyNode(Node):
         if self.use_high_level_policy:
             if not self._real_cube_state_is_fresh():
                 self._stop_for_stale_cube_state()
+            elif self._stop_high_level_if_goal_reached():
+                pass
             else:
+                self._cube_tracking_lost = False
                 self._update_high_level_command(ang_vel, gravity_orientation, qj_obs, dqj_obs)
                 self._publish_sport_move()
-        else:
+        self._update_cube_recovery_toggle_from_remote()
+        if self._cube_recovery_active:
+            self._update_cube_recovery_command()
+            if self._cube_recovery_active:
+                self._publish_sport_move()
+            else:
+                self._publish_sport_stop_move()
+        elif not self.use_high_level_policy:
             self.cmd[:] = 0.0
             self._publish_sport_stop_move()
 
@@ -1311,6 +1464,11 @@ class RealPolicyNode(Node):
         self.L_base_ang_vel_input_1.append(ang_vel[0])
         self.L_base_ang_vel_input_2.append(ang_vel[1])
         self.L_base_ang_vel_input_3.append(ang_vel[2])
+        foot_force = self.low_state.foot_force
+        self.L_foot_force_fr.append(foot_force[0])
+        self.L_foot_force_fl.append(foot_force[1])
+        self.L_foot_force_rr.append(foot_force[2])
+        self.L_foot_force_rl.append(foot_force[3])
 
     def _joystick_velocity_command(self) -> np.ndarray:
         command = np.array(
@@ -1358,6 +1516,142 @@ class RealPolicyNode(Node):
                 f"Remote {button_name.upper()} pressed: velocity command source is now {source}"
             )
         self._last_high_level_toggle_pressed = pressed
+
+    def _update_goal_from_remote(self) -> None:
+        button_name = str(self.get_parameter("goal_set_button").value)
+        button_index = self._remote_button_index(button_name)
+        pressed = self.remote_controller.button[button_index] == 1
+        if pressed and not self._last_goal_set_button_pressed:
+            if not math.isfinite(self._last_robot_odom_time):
+                self.get_logger().warn(
+                    f"Remote {button_name.upper()} pressed: cannot set goal before robot odometry is available"
+                )
+            else:
+                self._goal_condition_reached = False
+                self._cube_goal_enter_time = -math.inf
+                self.goal_xy[:] = self.robot_pos_xy
+                goal_values = [float(self.goal_xy[0]), float(self.goal_xy[1])]
+                result = self.set_parameters(
+                    [
+                        Parameter(
+                            "goal_xy",
+                            Parameter.Type.DOUBLE_ARRAY,
+                            goal_values,
+                        )
+                    ]
+                )[0]
+                if not result.successful:
+                    self.get_logger().warn(
+                        "Goal was updated internally, but the goal_xy parameter "
+                        f"update failed: {result.reason}"
+                    )
+                self._publish_goal_marker()
+                self.get_logger().info(
+                    f"Remote {button_name.upper()} pressed: goal region set "
+                    f"frame={self.get_parameter('policy_world_frame').value} "
+                    f"goal_xy=[{goal_values[0]:.3f}, {goal_values[1]:.3f}] "
+                    f"cube_radius={float(self.get_parameter('cube_goal_stop_radius').value):.3f}m "
+                    f"robot_clear_radius={float(self.get_parameter('robot_goal_clear_radius').value):.3f}m"
+                )
+        self._last_goal_set_button_pressed = pressed
+
+    @staticmethod
+    def _normalize_angle(angle: float) -> float:
+        return math.atan2(math.sin(angle), math.cos(angle))
+
+    def _cube_bearing_in_robot_frame(self) -> float:
+        cube_delta = self.cube_pos_xy - self.robot_pos_xy
+        cube_world_bearing = math.atan2(float(cube_delta[1]), float(cube_delta[0]))
+        return self._normalize_angle(cube_world_bearing - self.robot_yaw)
+
+    def _cube_state_is_current(self) -> bool:
+        if self.fake_observations_mode or self.fake_cube_observation_mode:
+            return True
+        timeout_s = float(self.get_parameter("cube_state_timeout_s").value)
+        return timeout_s <= 0.0 or time.monotonic() - self._last_cube_state_time <= timeout_s
+
+    def _update_cube_recovery_toggle_from_remote(self) -> None:
+        button_name = str(self.get_parameter("cube_recovery_toggle_button").value)
+        button_index = self._remote_button_index(button_name)
+        pressed = self.remote_controller.button[button_index] == 1
+        if pressed and not self._last_cube_recovery_toggle_pressed:
+            if self._cube_recovery_active:
+                self._cube_recovery_active = False
+                self.cmd[:] = 0.0
+                if self._uses_unitree_sport_high_level():
+                    self._publish_sport_stop_move()
+                self.get_logger().info(
+                    f"Remote {button_name.upper()} pressed: cube recovery rotation cancelled"
+                )
+            elif not self._cube_tracking_lost:
+                self.get_logger().info(
+                    f"Remote {button_name.upper()} pressed: cube recovery ignored because tracking was not lost"
+                )
+            elif not math.isfinite(self._last_cube_state_time):
+                self.get_logger().warn(
+                    f"Remote {button_name.upper()} pressed: cube recovery cannot start without a previous cube position"
+                )
+            else:
+                bearing = self._cube_bearing_in_robot_frame()
+                self._cube_recovery_direction = 1.0 if bearing >= 0.0 else -1.0
+                self._cube_recovery_last_yaw = self.robot_yaw
+                self._cube_recovery_rotation_rad = 0.0
+                self._cube_recovery_active = True
+                self._set_high_level_policy_enabled(False)
+                self.get_logger().info(
+                    f"Remote {button_name.upper()} pressed: starting cube recovery "
+                    f"bearing_deg={math.degrees(bearing):.1f} "
+                    f"direction={'left' if self._cube_recovery_direction > 0.0 else 'right'}"
+                )
+        self._last_cube_recovery_toggle_pressed = pressed
+
+    def _update_cube_recovery_command(self) -> None:
+        yaw_delta = self._normalize_angle(self.robot_yaw - self._cube_recovery_last_yaw)
+        self._cube_recovery_rotation_rad += abs(yaw_delta)
+        self._cube_recovery_last_yaw = self.robot_yaw
+
+        if self._cube_state_is_current():
+            bearing = self._cube_bearing_in_robot_frame()
+            front_angle_rad = math.radians(
+                abs(float(self.get_parameter("cube_recovery_front_angle_deg").value))
+            )
+            if abs(bearing) <= front_angle_rad:
+                self._cube_recovery_active = False
+                self._cube_tracking_lost = False
+                self.cmd[:] = 0.0
+                if bool(self.get_parameter("use_high_level_policy").value):
+                    if not self._stop_high_level_if_goal_reached():
+                        self._set_high_level_policy_enabled(True)
+                        self.get_logger().info(
+                            "Cube reacquired in front of robot; restarting high-level policy"
+                        )
+                else:
+                    self.get_logger().info(
+                        "Cube reacquired in front of robot; high-level policy remains disabled by parameter"
+                    )
+                return
+
+        max_rotation_rad = math.radians(
+            abs(float(self.get_parameter("cube_recovery_max_rotation_deg").value))
+        )
+        if self._cube_recovery_rotation_rad >= max_rotation_rad:
+            self._cube_recovery_active = False
+            self.cmd[:] = 0.0
+            if self._uses_unitree_sport_high_level():
+                self._publish_sport_stop_move()
+            self.get_logger().warn(
+                "Cube recovery stopped after reaching the maximum rotation "
+                f"({math.degrees(self._cube_recovery_rotation_rad):.1f} deg)"
+            )
+            return
+
+        angular_cmd = abs(float(self.get_parameter("cube_recovery_angular_cmd").value))
+        angular_limit = abs(float(self.config.max_cmd[2]))
+        self.cmd[:] = [
+            0.0,
+            0.0,
+            self._cube_recovery_direction * min(angular_cmd, angular_limit),
+        ]
 
     def _update_sport_select_stop_from_remote(self) -> None:
         if not self._uses_unitree_sport_high_level():
@@ -1487,8 +1781,23 @@ class RealPolicyNode(Node):
             time_ms = 0
             self.Liste_t = []
             while not self._stop_event.is_set():
+                cycle_start = time.perf_counter()
                 self.run_policy_step()
                 time.sleep(float(self.get_parameter("model_loop_period_s").value))
+                cycle_time_ms = (time.perf_counter() - cycle_start) * 1000.0
+                self.policy_cycle_times_ms.append(cycle_time_ms)
+                log_every = int(
+                    self.get_parameter("cycle_timing_log_every_n_steps").value
+                )
+                if log_every > 0 and self.counter % log_every == 0:
+                    recent_times = self.policy_cycle_times_ms[-log_every:]
+                    print(
+                        "Policy cycle time: "
+                        f"avg={np.mean(recent_times):.2f} ms, "
+                        f"min={np.min(recent_times):.2f} ms, "
+                        f"max={np.max(recent_times):.2f} ms "
+                        f"({len(recent_times)} cycles)"
+                    )
                 self.Liste_t.append(time_ms)
                 time_ms += 20
                 if self.remote_controller.button[KeyMap.select] == 1:
@@ -1565,12 +1874,13 @@ class RealPolicyNode(Node):
         import matplotlib.pyplot as plt
 
         self.get_logger().info("10] ----------> Visualizing data")
-        fig = plt.figure(figsize=(24, 24))
-        gs = fig.add_gridspec(2, 2)
+        fig = plt.figure(figsize=(24, 30))
+        gs = fig.add_gridspec(3, 2)
         ax1 = fig.add_subplot(gs[0, 0])
         ax2 = fig.add_subplot(gs[0, 1])
         ax3 = fig.add_subplot(gs[1, 0])
         ax4 = fig.add_subplot(gs[1, 1])
+        ax5 = fig.add_subplot(gs[2, :])
         ax1.plot(self.L_base_vel_cmd_input_1, label="L_base_vel_cmd_input_1")
         ax1.plot(self.L_base_lin_vel_input_1, label="L_base_lin_vel_input_1")
         ax1.plot(self.L_base_lin_vel_kalman_input_1, label="L_base_lin_vel_kalman_input_1")
@@ -1590,9 +1900,16 @@ class RealPolicyNode(Node):
         ax4.plot(self.L_base_lin_vel_kalman_input_4, label="L_base_lin_vel_kalman_input_4")
         ax4.legend()
         ax4.set_title("Wz")
+        ax5.plot(self.L_foot_force_fr, label="FR")
+        ax5.plot(self.L_foot_force_fl, label="FL")
+        ax5.plot(self.L_foot_force_rr, label="RR")
+        ax5.plot(self.L_foot_force_rl, label="RL")
+        ax5.legend()
+        ax5.set_title("Foot force sensors")
+        ax5.set_xlabel("Policy step")
+        ax5.set_ylabel("Raw sensor value")
         plt.tight_layout()
         plt.savefig(self.get_parameter("analysis_pdf_path").value)
-        plt.show()
 
     def destroy_node(self) -> bool:
         self._stop_event.set()

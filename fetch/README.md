@@ -53,7 +53,7 @@ All main parameters are in:
 
 Important fields:
 
-- model path (`policy_base_dir`, `policy_path`)
+- model paths (`high_level_policy_path`, `low_level_policy_path`)
 - control mode (`control_mode`):
   - `hierarchical_lowcmd`: current full stack, publishes `/lowcmd`
   - `unitree_sport_high_level`: only runs the high-level policy and sends Unitree Sport `Move` requests on `/api/sport/request`

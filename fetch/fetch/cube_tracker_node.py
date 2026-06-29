@@ -163,6 +163,7 @@ class CubeTrackerNode(Node):
         )
 
     def _declare_parameters(self) -> None:
+        # Input and output topics.
         self.declare_parameter('image_topic', '/camera/color/image_raw')
         self.declare_parameter('pointcloud_topic', '/camera/depth/color/points')
         self.declare_parameter('cube_state_topic', '/go2_fetch/cube_state')
@@ -172,45 +173,52 @@ class CubeTrackerNode(Node):
         self.declare_parameter('mask_image_topic', '/go2_fetch/cube_mask_image')
         self.declare_parameter('pre_yolo_image_topic', '/go2_fetch/cube_pre_yolo_image')
 
+        # Detector model.
         self.declare_parameter('model_path', '/home/ferdinand/unitree/go2_fetch_ros2/fetch/models/yoloe-26l-seg.onnx')
         self.declare_parameter('conf_threshold', 0.1)
         self.declare_parameter('yolo_classes', ['box'])
 
-        self.declare_parameter('max_mask_samples', 2500)
-        self.declare_parameter('min_inlier_points', 30)
-        self.declare_parameter('min_depth_m', 0.15)
-        self.declare_parameter('max_depth_m', 5.0)
-        self.declare_parameter('outlier_mad_scale', 3.0)
-
+        # Processing and diagnostics.
         self.declare_parameter('processing_rate_hz', 20.0)
         self.declare_parameter('status_log_rate_hz', 2.0)
         self.declare_parameter('pipeline_log_rate_hz', 5.0)
         self.declare_parameter('enable_timing_log', True)
         self.declare_parameter('timing_log_rate_hz', 5.0)
+
+        # Image and mask preprocessing.
         self.declare_parameter('enable_hsv_pre_mask', False)
         self.declare_parameter('publish_pre_yolo_image', True)
         self.declare_parameter('hsv_green_lower', [35, 40, 40])
         self.declare_parameter('hsv_green_upper', [90, 255, 255])
         self.declare_parameter('hsv_blue_lower', [90, 40, 40])
         self.declare_parameter('hsv_blue_upper', [135, 255, 255])
-        self.declare_parameter('detection_timeout_s', 0.35)
-        self.declare_parameter('velocity_window_s', 0.6)
-        self.declare_parameter('cube_state_low_pass_cutoff_hz', 2.0)
-        self.declare_parameter('cube_dimensions', [0.16, 0.16, 0.16])
-
-        self.declare_parameter('target_frame', 'base_link')
-        self.declare_parameter('tf_timeout_s', 0.05)
-
-        self.declare_parameter('publish_debug_image', False)
-        self.declare_parameter('publish_mask_image', True)
-
-        self.declare_parameter('cube_position_offset_xyz', [0.0, 0.0, 0.0])
-
         self.declare_parameter('mask_erode_iterations', 1)
         self.declare_parameter('mask_erode_kernel_size', 5)
         self.declare_parameter('central_mask_keep_ratio', 0.3)
+
+        # Point-cloud extraction and filtering.
+        self.declare_parameter('max_mask_samples', 2500)
+        self.declare_parameter('min_inlier_points', 30)
+        self.declare_parameter('min_depth_m', 0.15)
+        self.declare_parameter('max_depth_m', 5.0)
+        self.declare_parameter('outlier_mad_scale', 3.0)
+
+        # Tracking and smoothing.
+        self.declare_parameter('detection_timeout_s', 0.35)
+        self.declare_parameter('velocity_window_s', 0.6)
+        self.declare_parameter('cube_state_low_pass_cutoff_hz', 2.0)
         self.declare_parameter('max_pose_jump_m', 0.30)
         self.declare_parameter('max_pose_speed_mps', 1.0)
+
+        # Coordinate frame and cube geometry.
+        self.declare_parameter('target_frame', 'base_link')
+        self.declare_parameter('tf_timeout_s', 0.05)
+        self.declare_parameter('cube_dimensions', [0.16, 0.16, 0.16])
+        self.declare_parameter('cube_position_offset_xyz', [0.0, 0.0, 0.0])
+
+        # Debug visualization.
+        self.declare_parameter('publish_debug_image', False)
+        self.declare_parameter('publish_mask_image', True)
 
     def _load_model(self):
         if YOLO is None:
