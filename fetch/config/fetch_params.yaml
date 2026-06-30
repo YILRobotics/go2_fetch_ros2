@@ -68,10 +68,11 @@ policy_node:
     start_policy_on_startup: true
     # Options: hierarchical_lowcmd or unitree_sport_high_level.
     control_mode: hierarchical_lowcmd
-    auto_switch_to_low_level: true
+    # ROS-topic mode cannot perform the Unitree mode switch itself.
+    auto_switch_to_low_level: false
     # Fake observation mode always prevents command output.
     send_commands: true
-    use_high_level_policy: true
+    use_high_level_policy: false
     wait_for_start_button: true
     wait_for_a_button: true
 
@@ -80,9 +81,9 @@ policy_node:
     dds_domain_id: 0
 
     # --- Remote controls ---
-    high_level_toggle_button: X
-    goal_set_button: Y
-    cube_recovery_toggle_button: B
+    high_level_toggle_button: "X"
+    goal_set_button: "Y"
+    cube_recovery_toggle_button: "B"
 
     # --- Goal definition and completion condition ---
     goal_xy: [1.0, 0.0]
@@ -140,13 +141,13 @@ policy_node:
     command_velocity_marker_scale: 0.25
 
     # --- Policy models and inference rates ---
-    policy_path: ""
-    high_level_policy_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/unitree_go2_pushcube_4l/2026-05-15_02-52-05_cam_6/policy.pt
-    low_level_policy_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/unitree_go2_velocity_4l/2026-04-05_12-01-56_walk_2/policy.pt
+    high_level_policy_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/unitree_go2_pushcube_4l/2026-06-30_13-49-47_ff_5_1/policy.pt
+    low_level_policy_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/unitree_go2_velocity_4l/2026-06-30_11-11-40_walk_ff_5/policy.pt
+    # 0.02 seconds targets a 50 Hz low-level policy loop.
     model_loop_period_s: 0.02
     high_level_rate_hz: 15.0
-    high_level_num_obs: 48
-    low_level_num_obs: 45
+    high_level_num_obs: 52
+    low_level_num_obs: 49
 
     # --- Unitree Sport high-level control ---
     sport_move_publish_rate_hz: 15.0
@@ -162,11 +163,18 @@ policy_node:
     ang_vel_scale: 0.2
     dof_pos_scale: 1.0
     dof_vel_scale: 0.05
+    # Per-sensor force readings measured while no foot is touching the ground.
+    # Order of real robot is: [FR, FL, RR, RL]. Order in Simulation is: [FL, FR, RL, RR]. Reordering added
+    foot_force_offset: [3.0, 1.0, 3.0, 3.0]
+    # Clamp offset-corrected raw readings to match the Isaac Lab observation.
+    foot_force_clip_max: 150.0
+    # Divisor used to normalize the four LowState foot-force readings.
+    foot_force_scale: 75.0
     action_scale: 0.25
-    cmd_scale: [0.8, 0.8, 1.0]
+    cmd_scale: [1.0, 1.0, 1.0]
     num_actions: 12
-    num_obs: 45
-    max_cmd: [0.5, 0.5, 0.6] ###
+    num_obs: 49
+    max_cmd: [0.8, 0.6, 1.0] ###
 
     # --- Leg motor mapping, gains, and limits ---
     leg_joint2motor_idx: [3, 0, 9, 6, 4, 1, 10, 7, 5, 2, 11, 8]
@@ -185,9 +193,10 @@ policy_node:
 
     # --- Diagnostics and analysis output ---
     startup_sleep_s: 0.001
-    motor_log_every_n_steps: 50
+    motor_log_every_n_steps: 0 # 0 is turned off
     cycle_timing_log_every_n_steps: 50
+    profile_timing_every_n_steps: 50
     torque_limit_log_period_s: 1.0
     high_level_command_log_period_s: 1.0
     plot_on_exit: false
-    analysis_pdf_path: /home/fetch_ws/src/go2_fetch_ros2/fetch/analysis.png
+    analysis_pdf_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/plots/analysis.png

@@ -5,6 +5,7 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSHistoryPolicy
+from rclpy.signals import SignalHandlerOptions
 
 from nav_msgs.msg import Odometry
 from unitree_go.msg import LowState
@@ -32,6 +33,7 @@ class Inekf(Node):
                 ("base_frame", "base", PD(description="Robot base frame name (for TF)")),
                 ("odom_frame", "odom", PD(description="World frame name (for TF)")),
                 ("robot_freq", 500.0, PD(description="Frequency at which the robot publish its state")),
+                ("wait_for_all_feet_contact", True, PD(description="Wait for all feet to contact the ground before starting the filter")),
                 ("gyroscope_noise", 0.01, PD(description="Inekf covariance value")),
                 ("accelerometer_noise", 0.1, PD(description="Inekf covariance value")),
                 ("gyroscopeBias_noise", 0.00001, PD(description="Inekf covariance value")),
@@ -46,7 +48,8 @@ class Inekf(Node):
         self.base_frame = self.get_parameter("base_frame").value
         self.odom_frame = self.get_parameter("odom_frame").value
         self.dt = 1.0 / self.get_parameter("robot_freq").value
-        self.pause = True  # By default filter is paused and wait for the first feet contact to start
+        self.wait_for_all_feet_contact = self.get_parameter("wait_for_all_feet_contact").value
+        self.pause = True  # Initialize the filter from the first accepted state message
 
         # Load robot model
         self.robot = loadGo2()
@@ -103,13 +106,13 @@ class Inekf(Node):
         contact_list, pose_list, normed_covariance_list = self.feet_transformations(msg)
 
         if self.pause:
-            # if all(contact_list):
-            self.pause = False
-            self.initialize_filter(msg)
-            self.get_logger().info("All feet in contact with the ground: starting filter.")
-            # else:
-            #     self.get_logger().info("Waiting for all feet to touch the ground to start filter.", once=True)
-            #     return  # Skip the rest of the filter
+            if not self.wait_for_all_feet_contact or all(contact_list):
+                self.pause = False
+                self.initialize_filter(msg)
+                self.get_logger().info("Starting filter.")
+            else:
+                self.get_logger().info("Waiting for all feet to touch the ground to start filter.", once=True)
+                return  # Skip the rest of the filter
 
         # Propagation step: using IMU
         self.filter.propagate(imu_state, self.dt)
@@ -291,13 +294,16 @@ class Inekf(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
+    rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
 
     inekf_node = Inekf()
     try:
         rclpy.spin(inekf_node)
     except KeyboardInterrupt:
         pass
+    except RuntimeError as exc:
+        if "Unable to convert call argument to Python object" not in str(exc):
+            raise
     finally:
         inekf_node.destroy_node()
         if rclpy.ok():

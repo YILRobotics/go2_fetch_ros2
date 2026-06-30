@@ -60,7 +60,6 @@ class DeployRealConfig:
     weak_motor: list[int]
     lowcmd_topic: str
     lowstate_topic: str
-    policy_path: str
     leg_joint2motor_idx: list[int]
     kps: list[float]
     kds: list[float]

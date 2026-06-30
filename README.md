@@ -146,6 +146,14 @@ ssh unitree@192.168.123.18 # password 123
 ssh unitree@192.168.11.8  # password 123
 ```
 
+copy policy model:
+
+```bash
+cd src/go2_fetch_ros2/fetch/models
+
+rsync -avzP ferdinand@192.168.11.2:/home/ferdinand/fetchrobot/ferdinand/go2_fetch_rl/logs/rsl_rl/unitree_go2_velocity_4l/2026-06-30_11-11-40_walk_ff_5/exported/policy.pt .
+```
+
 ## ROS 2 Network Setup
 
 ### Run ROS 2 on Computer
@@ -227,6 +235,8 @@ ros2 topic pub /cmd_vel geometry_msgs/msg/Twist \
 ```
 
 ## Realsense Camera
+
+PYTHONPATH="$PYTHONPATH:/usr/lib/python3/dist-packages" ros2 run fetch go2_camera_node
 
 ### Realsense Camera Setup
 
@@ -352,7 +362,8 @@ rviz2 -d /home/ferdinand/unitree/src/go2_fetch_ros2/fetch/rviz/realsense.rviz
 ### Record ROS 2 Bags
 
 ```bash
-ros2 bag record -e "(/go2_fetch/.*|/odometry/filtered|/tf|/camera/depth/color/points|/camera/color/image_raw/compressed|/robot_description|/tf_static)" -x ".*compressedDepth.*"
+cd rosbags
+ros2 bag record -e "(/go2_fetch/.*|/odometry/filtered|/tf|/camera/depth/color/points|/camera/color/image_raw/compressed|/robot_description|/tf_static|/lf/lowstate)" -x ".*compressedDepth.*"
 ```
 
 ### Check Disk Usage

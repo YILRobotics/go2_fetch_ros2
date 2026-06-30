@@ -30,6 +30,7 @@ setup(
             'dummy_image_pointcloud_publisher_node = fetch.dummy_image_pointcloud_publisher_node:main',
             'switch_to_low_level = fetch.switch_to_low_level:main',
             'restore_high_level = fetch.restore_high_level:main',
+            'go2_camera_node = fetch.go2_camera_node:main',
         ],
     },
 )

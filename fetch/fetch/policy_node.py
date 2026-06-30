@@ -18,6 +18,7 @@ from rcl_interfaces.msg import SetParametersResult
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.parameter import Parameter
+from rclpy.signals import SignalHandlerOptions
 from rclpy.time import Time
 import tf2_ros
 from visualization_msgs.msg import Marker
@@ -63,6 +64,7 @@ class RealPolicyNode(Node):
         self.sport_request_publisher = None
         self.SportRequestRos = None
         self._stop_event = threading.Event()
+        self._shutdown_requested = threading.Event()
         self._worker_thread = None
         self.fake_observations_mode = bool(self.get_parameter("fake_observations_mode").value)
         self.fake_cube_observation_mode = bool(
@@ -105,14 +107,24 @@ class RealPolicyNode(Node):
                 if self.fake_observations_mode
                 else self._run_deploy_sequence
             )
-            self._worker_thread = threading.Thread(target=worker_target, daemon=True)
+            self._worker_thread = threading.Thread(
+                target=self._run_worker,
+                args=(worker_target,),
+                daemon=True,
+            )
             self._worker_thread.start()
+
+    def _run_worker(self, worker_target) -> None:
+        try:
+            worker_target()
+        finally:
+            self._shutdown_requested.set()
 
     def _declare_parameters(self) -> None:
         # Startup, operating mode, and command gates.
         self.declare_parameter("start_policy_on_startup", True)
         self.declare_parameter("control_mode", CONTROL_MODE_HIERARCHICAL_LOWCMD)
-        self.declare_parameter("auto_switch_to_low_level", True)
+        self.declare_parameter("auto_switch_to_low_level", False)
         self.declare_parameter("send_commands", False)
         self.declare_parameter("use_high_level_policy", True)
         self.declare_parameter("wait_for_start_button", True)
@@ -188,8 +200,8 @@ class RealPolicyNode(Node):
         )
         self.declare_parameter("model_loop_period_s", 0.02)
         self.declare_parameter("high_level_rate_hz", 15.0)
-        self.declare_parameter("high_level_num_obs", 48)
-        self.declare_parameter("low_level_num_obs", 45)
+        self.declare_parameter("high_level_num_obs", 52)
+        self.declare_parameter("low_level_num_obs", 49)
 
         # Unitree Sport high-level control.
         self.declare_parameter("sport_move_publish_rate_hz", 15.0)
@@ -212,7 +224,7 @@ class RealPolicyNode(Node):
 
         # Leg motor mapping, gains, and limits.
         self.declare_parameter("leg_joint2motor_idx", [3, 0, 9, 6, 4, 1, 10, 7, 5, 2, 11, 8])
-        self.declare_parameter("default_angles", [-0.1, 0.8, -1.5, 0.1, 0.8, -1.5, -0.1, 1.0, -1.5, 0.1, 1.0, -1.5])
+        self.declare_parameter("default_angles", [0.1, -0.1, 0.1, -0.1, 0.8, 0.8, 1.0, 1.0, -1.5, -1.5, -1.5, -1.5])
         self.declare_parameter("kps", [25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0])
         self.declare_parameter("kds", [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5])
         self.declare_parameter("torque_limits", [23.7, 23.7, 35.55, 23.7, 23.7, 35.55, 23.7, 23.7, 35.55, 23.7, 23.7, 35.55])
@@ -235,11 +247,15 @@ class RealPolicyNode(Node):
             "arm_waist_target",
             Parameter.Type.DOUBLE_ARRAY,
         )
+        self.declare_parameter("foot_force_offset", [4.0, 0.0, 5.0, 5.0])
+        self.declare_parameter("foot_force_clip_max", 150.0)
+        self.declare_parameter("foot_force_scale", 100.0)
 
         # Diagnostics and analysis output.
         self.declare_parameter("startup_sleep_s", 0.001)
         self.declare_parameter("motor_log_every_n_steps", 50)
         self.declare_parameter("cycle_timing_log_every_n_steps", 50)
+        self.declare_parameter("profile_timing_every_n_steps", 50)
         self.declare_parameter("torque_limit_log_period_s", 1.0)
         self.declare_parameter("high_level_command_log_period_s", 1.0)
         self.declare_parameter("plot_on_exit", False)
@@ -468,6 +484,9 @@ class RealPolicyNode(Node):
         self._last_torque_limit_log_time = -math.inf
         self._torque_limit_events = {}
         self.policy_cycle_times_ms = []
+        self._last_send_cmd_timing_ms = (0.0, 0.0, 0.0)
+        self._analysis_plot_lock = threading.Lock()
+        self._analysis_plot_attempted = False
 
         self.dt = 0.002
         self.startPos = [0.0] * 12
@@ -551,9 +570,9 @@ class RealPolicyNode(Node):
         if not bool(self.get_parameter("auto_switch_to_low_level").value):
             return
 
-        self.get_logger().warn(
-            "auto_switch_to_low_level is disabled in ROS-topic mode. "
-            "Switch the robot to low-level mode with a separate Unitree tool if needed."
+        raise RuntimeError(
+            "auto_switch_to_low_level is unsupported in ROS-topic mode; "
+            "set it to false and switch the robot with a separate Unitree tool"
         )
 
     def wait_for_low_state(self) -> None:
@@ -600,13 +619,18 @@ class RealPolicyNode(Node):
     def _cube_state_callback(self, msg: Odometry) -> None:
         if self.fake_cube_observation_mode:
             return
-        self._last_cube_state_time = time.monotonic()
-        self._cube_state_stale_logged = False
-        pos_xy, vel_xy = self._transform_cube_state_to_policy_frame(msg)
+        transformed_state = self._transform_cube_state_to_policy_frame(msg)
+        if transformed_state is None:
+            return
+        pos_xy, vel_xy = transformed_state
         self.cube_pos_xy[:] = pos_xy
         self.cube_lin_vel_xy[:] = vel_xy
+        self._last_cube_state_time = time.monotonic()
+        self._cube_state_stale_logged = False
 
-    def _transform_cube_state_to_policy_frame(self, msg: Odometry) -> tuple[np.ndarray, np.ndarray]:
+    def _transform_cube_state_to_policy_frame(
+        self, msg: Odometry
+    ) -> tuple[np.ndarray, np.ndarray] | None:
         source_frame = msg.header.frame_id
         target_frame = str(self.get_parameter("policy_world_frame").value)
         pos_xy = np.array(
@@ -630,10 +654,10 @@ class RealPolicyNode(Node):
             if not self._cube_state_tf_warned:
                 self.get_logger().warn(
                     f"Cube state TF {target_frame} <- {source_frame} unavailable; "
-                    f"using raw cube_state_topic coordinates: {exc}"
+                    f"discarding cube state: {exc}"
                 )
                 self._cube_state_tf_warned = True
-            return pos_xy, vel_xy
+            return None
 
         self._cube_state_tf_warned = False
         translation = transform.transform.translation
@@ -920,9 +944,43 @@ class RealPolicyNode(Node):
             return
         if self.lowcmd_publisher_ is None:
             return
+        timing_start = time.perf_counter()
         self._apply_torque_limits(cmd)
+        torque_limits_done = time.perf_counter()
         cmd.crc = compute_go2_lowcmd_crc(cmd)
+        crc_done = time.perf_counter()
         self.lowcmd_publisher_.publish(cmd)
+        publish_done = time.perf_counter()
+        self._last_send_cmd_timing_ms = (
+            (torque_limits_done - timing_start) * 1000.0,
+            (crc_done - torque_limits_done) * 1000.0,
+            (publish_done - crc_done) * 1000.0,
+        )
+
+    def _send_safe_hold_command(self) -> None:
+        if (
+            not self.commands_enabled
+            or self._uses_unitree_sport_high_level()
+            or self.lowcmd_publisher_ is None
+            or self.low_cmd is None
+            or self.low_state is None
+            or not rclpy.ok()
+        ):
+            return
+
+        try:
+            for motor_idx in range(12):
+                q_actual = float(self.low_state.motor_state[motor_idx].q)
+                if not math.isfinite(q_actual):
+                    return
+                set_motor_cmd_position(self.low_cmd.motor_cmd[motor_idx], q_actual)
+                set_motor_cmd_velocity(self.low_cmd.motor_cmd[motor_idx], 0.0)
+                set_motor_cmd_gains(self.low_cmd.motor_cmd[motor_idx], 20.0, 3.0)
+                set_motor_cmd_torque(self.low_cmd.motor_cmd[motor_idx], 0.0)
+            self.send_cmd(self.low_cmd)
+        except Exception as exc:
+            if rclpy.ok():
+                self.get_logger().warn(f"Failed to publish safe hold command: {exc}")
 
     def _publish_sport_request(self, api_id: int, parameter: dict | None = None) -> None:
         if not self.commands_enabled:
@@ -1243,13 +1301,15 @@ class RealPolicyNode(Node):
             and not self._stop_event.is_set()
         ):
             default = self.config.default_angles
-            for i in range(12):
-                set_motor_cmd_position(self.low_cmd.motor_cmd[i], default[i])
-                set_motor_cmd_velocity(self.low_cmd.motor_cmd[i], 0)
-                set_motor_cmd_gains(self.low_cmd.motor_cmd[i], 60.0, 5.0)
-                set_motor_cmd_torque(self.low_cmd.motor_cmd[i], 0.0)
-                self.send_cmd(self.low_cmd)
-                time.sleep(0.002)
+            for policy_idx, motor_idx in enumerate(self.config.leg_joint2motor_idx):
+                set_motor_cmd_position(
+                    self.low_cmd.motor_cmd[motor_idx], default[policy_idx]
+                )
+                set_motor_cmd_velocity(self.low_cmd.motor_cmd[motor_idx], 0)
+                set_motor_cmd_gains(self.low_cmd.motor_cmd[motor_idx], 60.0, 5.0)
+                set_motor_cmd_torque(self.low_cmd.motor_cmd[motor_idx], 0.0)
+            self.send_cmd(self.low_cmd)
+            time.sleep(self.config.control_dt)
 
     def move_to_ground(self) -> None:
         percent = 0
@@ -1268,11 +1328,12 @@ class RealPolicyNode(Node):
                 set_motor_cmd_velocity(self.low_cmd.motor_cmd[i], 0)
                 set_motor_cmd_gains(self.low_cmd.motor_cmd[i], 60.0, 5.0)
                 set_motor_cmd_torque(self.low_cmd.motor_cmd[i], 0.0)
-                self.send_cmd(self.low_cmd)
+            self.send_cmd(self.low_cmd)
             time.sleep(0.002)
         self.get_logger().info("9] ---------> Robot is lying down")
 
     def run_policy_step(self):
+        step_start = time.perf_counter()
         self.counter += 1
         self._update_high_level_toggle_from_remote()
         self._update_goal_from_remote()
@@ -1287,6 +1348,7 @@ class RealPolicyNode(Node):
         dqj_obs = self.dqj.copy()
         default_joint = [0.1, -0.1, 0.1, -0.1, 0.8, 0.8, 1, 1, -1.5, -1.5, -1.5, -1.5]
         qj_obs = qj_obs - default_joint
+        input_done = time.perf_counter()
 
         if self.use_high_level_policy:
             if not self._real_cube_state_is_fresh():
@@ -1301,9 +1363,11 @@ class RealPolicyNode(Node):
             self._update_cube_recovery_command()
         elif not self.use_high_level_policy:
             self.cmd[:] = self._joystick_velocity_command()
+        command_done = time.perf_counter()
 
         self._publish_command_velocity_marker()
         self._publish_current_velocity_marker()
+        markers_done = time.perf_counter()
 
         self.obs = np.concatenate(
             [
@@ -1312,12 +1376,14 @@ class RealPolicyNode(Node):
                 self.cmd,
                 qj_obs * self.config.dof_pos_scale,
                 dqj_obs * self.config.dof_vel_scale,
+                self._scaled_foot_force(),
                 self.action,
             ]
         ).astype(np.float32)
         self._require_observation_size(
             self.obs, int(self.get_parameter("low_level_num_obs").value), "Low-level"
         )
+        observation_done = time.perf_counter()
         with torch.inference_mode():
             self.action = (
                 self.low_level_policy(torch.from_numpy(self.obs).unsqueeze(0))
@@ -1326,6 +1392,7 @@ class RealPolicyNode(Node):
                 .numpy()
                 .reshape(-1)
             )
+        inference_done = time.perf_counter()
         if self.action.size != self.config.num_actions:
             raise RuntimeError(
                 f"Low-level policy returned {self.action.size} actions; expected {self.config.num_actions}"
@@ -1344,10 +1411,36 @@ class RealPolicyNode(Node):
                 self.config.kds[i],
             )
             set_motor_cmd_torque(self.low_cmd.motor_cmd[motor_idx], 0.0)
+        motor_command_done = time.perf_counter()
         self.send_cmd(self.low_cmd)
+        send_done = time.perf_counter()
         self._log_policy_motor_outputs()
 
         self._record_policy_command_inputs(ang_vel)
+        record_done = time.perf_counter()
+
+        profile_every = int(
+            self.get_parameter("profile_timing_every_n_steps").value
+        )
+        if profile_every > 0 and self.counter % profile_every == 0:
+            torque_ms, crc_ms, publish_ms = self._last_send_cmd_timing_ms
+            print(
+                "Policy step profile "
+                f"step={self.counter} "
+                f"input={(input_done - step_start) * 1000.0:.2f}ms "
+                f"command={(command_done - input_done) * 1000.0:.2f}ms "
+                f"markers={(markers_done - command_done) * 1000.0:.2f}ms "
+                f"observation={(observation_done - markers_done) * 1000.0:.2f}ms "
+                f"inference={(inference_done - observation_done) * 1000.0:.2f}ms "
+                f"motor_build={(motor_command_done - inference_done) * 1000.0:.2f}ms "
+                f"send_total={(send_done - motor_command_done) * 1000.0:.2f}ms "
+                f"torque_limit={torque_ms:.2f}ms "
+                f"crc={crc_ms:.2f}ms "
+                f"publish={publish_ms:.2f}ms "
+                f"record={(record_done - send_done) * 1000.0:.2f}ms "
+                f"total={(record_done - step_start) * 1000.0:.2f}ms",
+                flush=True,
+            )
 
         return self.obs
 
@@ -1720,12 +1813,36 @@ class RealPolicyNode(Node):
                 np.array([self.goal_radius], dtype=np.float32),
                 self.goal_xy - self.cube_pos_xy,
                 self.cube_pos_xy - lf_foot_xy,
+                self._scaled_foot_force(),
             ]
         ).astype(np.float32)
         self._require_observation_size(
             obs, int(self.get_parameter("high_level_num_obs").value), "High-level"
         )
         return obs
+
+    def _scaled_foot_force(self) -> np.ndarray:
+        foot_force_offset = np.asarray(
+            self.get_parameter("foot_force_offset").value, dtype=np.float32
+        )
+        if foot_force_offset.size != 4:
+            raise ValueError("foot_force_offset must contain exactly four values")
+        foot_force_clip_max = float(
+            self.get_parameter("foot_force_clip_max").value
+        )
+        if foot_force_clip_max <= 0.0:
+            raise ValueError("foot_force_clip_max must be greater than zero")
+        foot_force_scale = float(self.get_parameter("foot_force_scale").value)
+        if foot_force_scale <= 0.0:
+            raise ValueError("foot_force_scale must be greater than zero")
+        foot_force = np.asarray(self.low_state.foot_force, dtype=np.float32)
+        corrected_foot_force = np.clip(
+            foot_force - foot_force_offset,
+            0.0,
+            foot_force_clip_max,
+        )
+        # Unitree: [FR, FL, RR, RL]; Isaac Lab policy: [FL, FR, RL, RR].
+        return corrected_foot_force[[1, 0, 3, 2]] / foot_force_scale
 
     def _lookup_lf_foot_xy(self) -> np.ndarray:
         world_frame = str(self.get_parameter("policy_world_frame").value)
@@ -1778,12 +1895,33 @@ class RealPolicyNode(Node):
             self.get_logger().info("             # Press 'SELECT' to stop the model            #")
             self.get_logger().info("             ###############################################")
 
+            loop_period_s = float(
+                self.get_parameter("model_loop_period_s").value
+            )
+            if loop_period_s <= 0.0:
+                raise ValueError("model_loop_period_s must be greater than zero")
+            next_cycle_deadline = time.perf_counter()
             time_ms = 0
             self.Liste_t = []
             while not self._stop_event.is_set():
                 cycle_start = time.perf_counter()
                 self.run_policy_step()
-                time.sleep(float(self.get_parameter("model_loop_period_s").value))
+                self.Liste_t.append(time_ms)
+                time_ms += int(round(loop_period_s * 1000.0))
+                if self.remote_controller.button[KeyMap.select] == 1:
+                    self.get_logger().info(
+                        "Remote SELECT pressed: stopping low-level policy loop and moving to ground"
+                    )
+                    self.move_to_ground()
+                    break
+
+                next_cycle_deadline += loop_period_s
+                remaining_s = next_cycle_deadline - time.perf_counter()
+                if remaining_s > 0.0:
+                    time.sleep(remaining_s)
+                else:
+                    next_cycle_deadline = time.perf_counter()
+
                 cycle_time_ms = (time.perf_counter() - cycle_start) * 1000.0
                 self.policy_cycle_times_ms.append(cycle_time_ms)
                 log_every = int(
@@ -1798,19 +1936,16 @@ class RealPolicyNode(Node):
                         f"max={np.max(recent_times):.2f} ms "
                         f"({len(recent_times)} cycles)"
                     )
-                self.Liste_t.append(time_ms)
-                time_ms += 20
-                if self.remote_controller.button[KeyMap.select] == 1:
-                    self.get_logger().info(
-                        "Remote SELECT pressed: stopping low-level policy loop and moving to ground"
-                    )
-                    self.move_to_ground()
-                    break
 
-            if bool(self.get_parameter("plot_on_exit").value):
-                self._plot_analysis()
+            self._plot_analysis_if_enabled()
         except Exception as exc:
-            self.get_logger().error(f"Policy deployment stopped because of an error: {exc}")
+            self._stop_event.set()
+            self._send_safe_hold_command()
+            if rclpy.ok():
+                self.get_logger().error(
+                    f"Policy deployment stopped because of an error: {exc}"
+                )
+            self._plot_analysis_if_enabled()
 
     def _run_unitree_sport_high_level_sequence(self) -> None:
         try:
@@ -1847,12 +1982,12 @@ class RealPolicyNode(Node):
                     self._publish_sport_stop_move()
                     break
 
-            if bool(self.get_parameter("plot_on_exit").value):
-                self._plot_analysis()
+            self._plot_analysis_if_enabled()
         except Exception as exc:
             self.get_logger().error(
                 f"High-level Unitree Sport policy stopped because of an error: {exc}"
             )
+            self._plot_analysis_if_enabled()
         finally:
             self._publish_sport_stop_move()
 
@@ -1870,11 +2005,24 @@ class RealPolicyNode(Node):
                 f"Fake observation policy loop stopped because of an error: {exc}"
             )
 
+    def _plot_analysis_if_enabled(self) -> None:
+        if not bool(self.get_parameter("plot_on_exit").value):
+            return
+        with self._analysis_plot_lock:
+            if self._analysis_plot_attempted:
+                return
+            self._analysis_plot_attempted = True
+            try:
+                self._plot_analysis()
+            except Exception as exc:
+                if rclpy.ok():
+                    self.get_logger().error(f"Failed to save analysis plot: {exc}")
+
     def _plot_analysis(self) -> None:
         import matplotlib.pyplot as plt
 
         self.get_logger().info("10] ----------> Visualizing data")
-        fig = plt.figure(figsize=(24, 30))
+        fig = plt.figure(figsize=(40, 30))
         gs = fig.add_gridspec(3, 2)
         ax1 = fig.add_subplot(gs[0, 0])
         ax2 = fig.add_subplot(gs[0, 1])
@@ -1909,22 +2057,37 @@ class RealPolicyNode(Node):
         ax5.set_xlabel("Policy step")
         ax5.set_ylabel("Raw sensor value")
         plt.tight_layout()
-        plt.savefig(self.get_parameter("analysis_pdf_path").value)
+        output_path = Path(
+            str(self.get_parameter("analysis_pdf_path").value)
+        ).expanduser()
+        timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+        output_path = output_path.with_name(
+            f"{output_path.stem}_{timestamp}{output_path.suffix}"
+        )
+        try:
+            fig.savefig(output_path)
+        finally:
+            plt.close(fig)
+        print(f"Analysis visualization finished: {output_path}", flush=True)
 
     def destroy_node(self) -> bool:
         self._stop_event.set()
         if self._worker_thread is not None and self._worker_thread.is_alive():
-            self._worker_thread.join(timeout=1.0)
+            self._worker_thread.join(timeout=2.0)
         if self._uses_unitree_sport_high_level():
             self._publish_sport_stop_move()
+        else:
+            self._send_safe_hold_command()
+        self._plot_analysis_if_enabled()
         return super().destroy_node()
 
 
 def main(args=None) -> None:
-    rclpy.init(args=args)
+    rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
     node = RealPolicyNode()
     try:
-        rclpy.spin(node)
+        while rclpy.ok() and not node._shutdown_requested.is_set():
+            rclpy.spin_once(node, timeout_sec=0.1)
     except KeyboardInterrupt:
         pass
     except RuntimeError as exc:
@@ -1938,6 +2101,7 @@ def main(args=None) -> None:
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
+        print("Policy node shutdown completed cleanly.", flush=True)
 
 
 if __name__ == "__main__":
