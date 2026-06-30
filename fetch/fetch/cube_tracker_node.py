@@ -1,6 +1,6 @@
 #!/home/unitree/miniconda3/envs/env_deploy/bin/python
 
-"""Cube tracker node using YOLOE segmentation + Realsense point cloud."""
+"""Cube tracker using reduced-resolution YOLO segmentation and aligned depth."""
 
 from __future__ import annotations
 
@@ -24,8 +24,7 @@ from nav_msgs.msg import Odometry
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
-from sensor_msgs.msg import Image, PointCloud2
-from sensor_msgs_py import point_cloud2
+from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import Bool
 from visualization_msgs.msg import Marker
 import tf2_ros
@@ -59,7 +58,8 @@ class CubeTrackerNode(Node):
         self._declare_parameters()
 
         self.image_topic = self.get_parameter('image_topic').value
-        self.pointcloud_topic = self.get_parameter('pointcloud_topic').value
+        self.depth_topic = self.get_parameter('depth_topic').value
+        self.camera_info_topic = self.get_parameter('camera_info_topic').value
         self.cube_state_topic = self.get_parameter('cube_state_topic').value
         self.cube_visible_topic = self.get_parameter('cube_visible_topic').value
         self.cube_marker_topic = self.get_parameter('cube_marker_topic').value
@@ -70,6 +70,13 @@ class CubeTrackerNode(Node):
         self.model_path = (self.get_parameter('model_path').value)
         self.conf_threshold = float(self.get_parameter('conf_threshold').value)
         self.yolo_classes = [str(v) for v in self.get_parameter('yolo_classes').value]
+        self.inference_width = int(self.get_parameter('inference_width').value)
+        self.inference_height = int(self.get_parameter('inference_height').value)
+        if self.inference_width <= 0 or self.inference_height <= 0:
+            raise ValueError('inference_width and inference_height must be positive')
+        self.depth_scale_m = float(self.get_parameter('depth_scale_m').value)
+        if self.depth_scale_m <= 0.0:
+            raise ValueError('depth_scale_m must be positive')
         self.max_mask_samples = int(self.get_parameter('max_mask_samples').value)
         self.min_inlier_points = int(self.get_parameter('min_inlier_points').value)
         self.min_depth_m = float(self.get_parameter('min_depth_m').value)
@@ -110,7 +117,8 @@ class CubeTrackerNode(Node):
         self._bridge = CvBridge()
         self._history: deque[Tuple[float, float, float]] = deque()
 
-        self._latest_pair: Optional[Tuple[Image, PointCloud2]] = None
+        self._latest_pair: Optional[Tuple[Image, Image]] = None
+        self._camera_info: Optional[CameraInfo] = None
         self._latest_lock = threading.Lock()
         self._last_processed_stamp: Optional[Tuple[int, int]] = None
         self._last_detection_time: Optional[float] = None
@@ -147,11 +155,17 @@ class CubeTrackerNode(Node):
         )
 
         self._image_sub = Subscriber(self, Image, self.image_topic, qos_profile=sensor_qos)
-        self._pointcloud_sub = Subscriber(self, PointCloud2, self.pointcloud_topic, qos_profile=sensor_qos)
+        self._depth_sub = Subscriber(self, Image, self.depth_topic, qos_profile=sensor_qos)
+        self._camera_info_sub = self.create_subscription(
+            CameraInfo,
+            self.camera_info_topic,
+            self._camera_info_cb,
+            sensor_qos,
+        )
         self._sync = ApproximateTimeSynchronizer(
-            [self._image_sub, self._pointcloud_sub],
-            queue_size=30,
-            slop=0.4,
+            [self._image_sub, self._depth_sub],
+            queue_size=10,
+            slop=0.1,
             allow_headerless=False,
         )
         self._sync.registerCallback(self._sync_cb)
@@ -159,13 +173,16 @@ class CubeTrackerNode(Node):
         self._timer = self.create_timer(1.0 / self.processing_rate_hz, self._on_timer)
 
         self.get_logger().info(
-            f'Cube tracker ready. model={self.model_path} image={self.image_topic} cloud={self.pointcloud_topic}'
+            f'Cube tracker ready. model={self.model_path} image={self.image_topic} '
+            f'depth={self.depth_topic} inference={self.inference_width}x{self.inference_height}'
         )
 
     def _declare_parameters(self) -> None:
         # Input and output topics.
         self.declare_parameter('image_topic', '/camera/color/image_raw')
-        self.declare_parameter('pointcloud_topic', '/camera/depth/color/points')
+        self.declare_parameter('depth_topic', '/camera/aligned_depth_to_color/image_raw')
+        # Aligned depth uses the color optical geometry.
+        self.declare_parameter('camera_info_topic', '/camera/color/camera_info')
         self.declare_parameter('cube_state_topic', '/go2_fetch/cube_state')
         self.declare_parameter('cube_visible_topic', '/go2_fetch/cube_visible')
         self.declare_parameter('cube_marker_topic', '/go2_fetch/cube_marker')
@@ -177,6 +194,9 @@ class CubeTrackerNode(Node):
         self.declare_parameter('model_path', '/home/ferdinand/unitree/go2_fetch_ros2/fetch/models/yoloe-26l-seg.onnx')
         self.declare_parameter('conf_threshold', 0.1)
         self.declare_parameter('yolo_classes', ['box'])
+        self.declare_parameter('inference_width', 640)
+        self.declare_parameter('inference_height', 360)
+        self.declare_parameter('depth_scale_m', 0.001)
 
         # Processing and diagnostics.
         self.declare_parameter('processing_rate_hz', 20.0)
@@ -275,15 +295,18 @@ class CubeTrackerNode(Node):
         except Exception as exc:
             self.get_logger().warn(f'Failed to set ultralytics weights_dir={model_dir}: {exc}')
 
-    def _sync_cb(self, image_msg: Image, cloud_msg: PointCloud2) -> None:
+    def _camera_info_cb(self, camera_info_msg: CameraInfo) -> None:
+        self._camera_info = camera_info_msg
+
+    def _sync_cb(self, image_msg: Image, depth_msg: Image) -> None:
         with self._latest_lock:
-            self._latest_pair = (image_msg, cloud_msg)
+            self._latest_pair = (image_msg, depth_msg)
 
     def _on_timer(self) -> None:
         if self._processing:
             return
 
-        pair: Optional[Tuple[Image, PointCloud2]] = None
+        pair: Optional[Tuple[Image, Image]] = None
         with self._latest_lock:
             if self._latest_pair is not None:
                 pair = self._latest_pair
@@ -319,7 +342,7 @@ class CubeTrackerNode(Node):
         finally:
             self._processing = False
 
-    def _process_pair(self, image_msg: Image, cloud_msg: PointCloud2) -> Optional[DetectionResult]:
+    def _process_pair(self, image_msg: Image, depth_msg: Image) -> Optional[DetectionResult]:
         if self._model is None:
             return None
 
@@ -341,9 +364,14 @@ class CubeTrackerNode(Node):
         if image is None:
             log_timing('unsupported_image_encoding')
             return None
-        yolo_input = image
+        yolo_input = cv2.resize(
+            image,
+            (self.inference_width, self.inference_height),
+            interpolation=cv2.INTER_LINEAR,
+        )
+        mark('resize_for_yolo')
         if self.enable_hsv_pre_mask:
-            yolo_input, color_mask = self._apply_hsv_green_blue_mask(image)
+            yolo_input, color_mask = self._apply_hsv_green_blue_mask(yolo_input)
             mark('hsv_pre_mask')
             keep_ratio = float(np.count_nonzero(color_mask)) / float(color_mask.size)
             self._maybe_log_pipeline(f'pipeline: hsv pre-mask enabled keep_ratio={keep_ratio:.3f}')
@@ -376,25 +404,36 @@ class CubeTrackerNode(Node):
             label = names.get(cls_id, str(cls_id)) if isinstance(names, dict) else str(cls_id)
             self._maybe_log_pipeline(f'pipeline: selected detection label={label} conf={conf:.2f} idx={best_idx}')
 
-        mask = self._extract_mask(result, best_idx, image.shape[:2])
+        inference_mask = self._extract_mask(result, best_idx, yolo_input.shape[:2])
         mark('extract_mask')
-        if mask is None:
+        if inference_mask is None:
             self._maybe_log_pipeline('pipeline: mask rejected (too few mask pixels)')
             log_timing('mask_rejected')
             return None
 
-        self._maybe_log_pipeline(f'pipeline: mask pixels={int(mask.sum())}')
+        self._maybe_log_pipeline(f'pipeline: inference mask pixels={int(inference_mask.sum())}')
+
+        camera_mask = None
+        if self.publish_mask_image or self.publish_debug_image:
+            camera_mask = cv2.resize(
+                inference_mask.astype(np.uint8),
+                (image.shape[1], image.shape[0]),
+                interpolation=cv2.INTER_NEAREST,
+            ).astype(bool)
+            mark('resize_mask_to_camera')
 
         if self.publish_mask_image:
-            self._publish_mask(mask, image_msg)
+            self._publish_mask(camera_mask, image_msg)
             mark('publish_mask_image')
 
         if self.publish_debug_image:
-            self._publish_debug(image, result, mask)
+            self._publish_debug(image, result, camera_mask)
             mark('publish_debug_image_2d')
 
-        depth_mask = self._erode_mask_for_depth(mask)
-        centroid = self._extract_filtered_centroid(depth_mask, cloud_msg)
+        # Keep depth sampling in the small inference grid. Pixel coordinates are
+        # mapped directly to the aligned-depth resolution during deprojection.
+        depth_mask = self._erode_mask_for_depth(inference_mask)
+        centroid = self._extract_filtered_centroid(depth_mask, depth_msg)
         mark('extract_filtered_centroid')
         if centroid is None:
             reason = self._last_centroid_reject_reason or 'unknown reason'
@@ -404,13 +443,13 @@ class CubeTrackerNode(Node):
 
         x, y, z = centroid
         point = PointStamped()
-        point.header = cloud_msg.header
+        point.header = depth_msg.header
         point.point.x = float(x)
         point.point.y = float(y)
         point.point.z = float(z)
 
-        out_frame = cloud_msg.header.frame_id
-        if self.target_frame and self.target_frame != cloud_msg.header.frame_id:
+        out_frame = depth_msg.header.frame_id
+        if self.target_frame and self.target_frame != depth_msg.header.frame_id:
             try:
                 transformed = self._tf_buffer.transform(
                     point,
@@ -420,7 +459,7 @@ class CubeTrackerNode(Node):
                 point = transformed
                 out_frame = self.target_frame
             except Exception as exc:
-                self.get_logger().warn(f'TF transform failed ({cloud_msg.header.frame_id}->{self.target_frame}): {exc}')
+                self.get_logger().warn(f'TF transform failed ({depth_msg.header.frame_id}->{self.target_frame}): {exc}')
             mark('tf_transform')
 
         now_filter_s = self.get_clock().now().nanoseconds * 1e-9
@@ -444,7 +483,7 @@ class CubeTrackerNode(Node):
         mark('estimate_velocity')
 
         if self.publish_debug_image:
-            self._publish_debug(image, result, mask, pos_xy, vel_xy)
+            self._publish_debug(image, result, camera_mask, pos_xy, vel_xy)
             mark('publish_debug_image_3d')
 
         distance_m = float(np.linalg.norm([point.point.x, point.point.y, point.point.z]))
@@ -680,7 +719,49 @@ class CubeTrackerNode(Node):
 
         return xs[keep], ys[keep]
 
-    def _extract_filtered_centroid(self, mask: np.ndarray, cloud_msg: PointCloud2) -> Optional[np.ndarray]:
+    def _depth_array(self, depth_msg: Image) -> Optional[Tuple[np.ndarray, float]]:
+        encoding = str(depth_msg.encoding).lower()
+        if encoding in ('16uc1', 'mono16'):
+            dtype = np.dtype(np.uint16)
+            scale = self.depth_scale_m
+        elif encoding == '32fc1':
+            dtype = np.dtype(np.float32)
+            scale = 1.0
+        else:
+            self._last_centroid_reject_reason = f'unsupported depth encoding {depth_msg.encoding}'
+            return None
+
+        dtype = dtype.newbyteorder('>' if depth_msg.is_bigendian else '<')
+        width = int(depth_msg.width)
+        height = int(depth_msg.height)
+        row_items = int(depth_msg.step) // dtype.itemsize
+        if width <= 0 or height <= 0 or row_items < width:
+            self._last_centroid_reject_reason = (
+                f'invalid depth layout width={width} height={height} step={depth_msg.step}'
+            )
+            return None
+
+        expected_items = row_items * height
+        values = np.frombuffer(depth_msg.data, dtype=dtype, count=expected_items)
+        if values.size != expected_items:
+            self._last_centroid_reject_reason = (
+                f'depth payload has {values.size} values, expected {expected_items}'
+            )
+            return None
+
+        return values.reshape(height, row_items)[:, :width], scale
+
+    def _extract_filtered_centroid(self, mask: np.ndarray, depth_msg: Image) -> Optional[np.ndarray]:
+        camera_info = self._camera_info
+        if camera_info is None:
+            self._last_centroid_reject_reason = 'waiting for aligned-depth camera_info'
+            return None
+
+        depth_result = self._depth_array(depth_msg)
+        if depth_result is None:
+            return None
+        depth, depth_scale = depth_result
+
         ys, xs = np.where(mask)
         if xs.size == 0:
             self._last_centroid_reject_reason = 'mask has zero valid pixels'
@@ -693,22 +774,14 @@ class CubeTrackerNode(Node):
             xs = xs[pick]
             ys = ys[pick]
 
-        width = int(cloud_msg.width)
-        height = int(cloud_msg.height)
+        height, width = depth.shape
         if width <= 0 or height <= 0:
-            self._last_centroid_reject_reason = f'invalid cloud dimensions width={width} height={height}'
+            self._last_centroid_reject_reason = f'invalid depth dimensions width={width} height={height}'
             return None
 
         mask_height, mask_width = mask.shape
-        if height == 1 and mask_height > 1:
-            self._last_centroid_reject_reason = (
-                f'point cloud is unordered ({width}x{height}); enable pointcloud.ordered_pc '
-                'to map image pixels to 3D points'
-            )
-            return None
-
-        # RealSense depth decimation changes the organized cloud resolution. Map
-        # mask pixel centers into that lower-resolution grid before reading XYZ.
+        # Map the full camera mask into the aligned-depth grid. This also handles
+        # a decimation filter changing the aligned depth resolution.
         if width != mask_width or height != mask_height:
             xs = np.floor((xs.astype(np.float64) + 0.5) * width / mask_width).astype(np.int64)
             ys = np.floor((ys.astype(np.float64) + 0.5) * height / mask_height).astype(np.int64)
@@ -722,45 +795,35 @@ class CubeTrackerNode(Node):
         xs = xs[valid]
         ys = ys[valid]
         if xs.size == 0:
-            self._last_centroid_reject_reason = 'all sampled mask pixels fell outside cloud bounds'
+            self._last_centroid_reject_reason = 'all sampled mask pixels fell outside depth bounds'
             return None
 
-        # ROS 2 Humble read_points_numpy() indexes by flattened point indices.
-        flat_indices = ys.astype(np.int64) * width + xs.astype(np.int64)
-        flat_indices = np.unique(flat_indices)
-        points = point_cloud2.read_points_numpy(
-            cloud_msg,
-            field_names=['x', 'y', 'z'],
-            skip_nans=False,
-            uvs=flat_indices,
-        )
+        flat_indices = np.unique(ys.astype(np.int64) * width + xs.astype(np.int64))
+        ys, xs = np.divmod(flat_indices, width)
+        z = depth[ys, xs].astype(np.float64) * depth_scale
 
-        points = np.asarray(points)
-        if points.size == 0:
-            self._last_centroid_reject_reason = 'read_points_numpy returned zero points'
-            return None
-        if points.ndim == 1:
-            if points.shape[0] != 3:
-                self._last_centroid_reject_reason = f'unexpected 1D points shape {points.shape}'
-                return None
-            points = points.reshape(1, 3)
-        elif points.ndim != 2 or points.shape[1] != 3:
-            points = points.reshape((-1, 3))
-
-        if points.size == 0:
-            self._last_centroid_reject_reason = 'points empty after reshape'
+        info_width = int(camera_info.width) or width
+        info_height = int(camera_info.height) or height
+        scale_x = width / info_width
+        scale_y = height / info_height
+        fx = float(camera_info.k[0]) * scale_x
+        fy = float(camera_info.k[4]) * scale_y
+        cx = float(camera_info.k[2]) * scale_x
+        cy = float(camera_info.k[5]) * scale_y
+        if fx <= 0.0 or fy <= 0.0:
+            self._last_centroid_reject_reason = f'invalid camera intrinsics fx={fx} fy={fy}'
             return None
 
-        finite_mask = np.isfinite(points).all(axis=1)
-        points = points[finite_mask]
-        if points.shape[0] < self.min_inlier_points:
-            self._last_centroid_reject_reason = (
-                f'too few finite points: {points.shape[0]} < min_inlier_points({self.min_inlier_points})'
-            )
-            return None
+        x = (xs.astype(np.float64) - cx) * z / fx
+        y = (ys.astype(np.float64) - cy) * z / fy
+        points = np.column_stack((x, y, z))
 
-        depth_mask = np.logical_and(points[:, 2] > self.min_depth_m, points[:, 2] < self.max_depth_m)
-        points = points[depth_mask]
+        valid_depth = np.logical_and.reduce((
+            np.isfinite(points).all(axis=1),
+            points[:, 2] > self.min_depth_m,
+            points[:, 2] < self.max_depth_m,
+        ))
+        points = points[valid_depth]
         if points.shape[0] < self.min_inlier_points:
             self._last_centroid_reject_reason = (
                 f'too few depth-in-range points: {points.shape[0]} < min_inlier_points({self.min_inlier_points}) '
@@ -930,6 +993,8 @@ class CubeTrackerNode(Node):
         vel_xy: Optional[Tuple[float, float]] = None,
     ) -> None:
         draw = result.plot()
+        if draw.shape[:2] != image.shape[:2]:
+            draw = cv2.resize(draw, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_LINEAR)
         overlay = np.zeros_like(draw)
         overlay[mask] = (0, 255, 0)
         draw = cv2.addWeighted(draw, 1.0, overlay, 0.2, 0.0)

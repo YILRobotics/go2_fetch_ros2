@@ -27,6 +27,8 @@ def generate_launch_description() -> LaunchDescription:
 
     params_file = default_params
     image_topic = '/camera/color/image_raw'
+    depth_topic = '/camera/aligned_depth_to_color/image_raw'
+    camera_info_topic = '/camera/color/camera_info'
     pointcloud_topic = '/camera/depth/color/points'
     use_dummy_publisher = 'false'
     use_rviz = 'true'
@@ -43,8 +45,8 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[{
             'enable_color': True,
             'enable_depth': True,
-            'pointcloud__neon_.enable': True,
-            'pointcloud.enable': True,
+            'pointcloud__neon_.enable': False,
+            'pointcloud.enable': False,
             'pointcloud.stream_filter': 0,
             'pointcloud.stream_index_filter': 0,
             'pointcloud.ordered_pc': True,
@@ -54,7 +56,7 @@ def generate_launch_description() -> LaunchDescription:
             # 'rgb_camera.profile': '640x480x30',
             'depth_module.profile': '1280x720x30',
             'rgb_camera.profile': '1280x720x30',
-            # Fixed RealSense post-processing filters for lighter/cleaner point clouds.
+            # Fixed RealSense post-processing filters for lighter/cleaner aligned depth.
             'decimation_filter.enable': True,
             'decimation_filter.filter_magnitude': 4,
             'spatial_filter.enable': True,
@@ -102,7 +104,10 @@ def generate_launch_description() -> LaunchDescription:
             params_file,
             {
                 'image_topic': image_topic,
-                'pointcloud_topic': pointcloud_topic,
+                'depth_topic': depth_topic,
+                'camera_info_topic': camera_info_topic,
+                'inference_width': 640,
+                'inference_height': 360,
             },
         ],
     )

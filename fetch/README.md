@@ -2,7 +2,7 @@
 
 ROS 2 Humble package with three nodes for Go2 push-cube deployment:
 
-1. `cube_tracker_node`: Realsense + YOLOE segmentation + pointcloud filtering, publishes cube planar state.
+1. `cube_tracker_node`: RealSense + reduced-resolution YOLOE segmentation + aligned-depth filtering, publishes cube planar state.
 2. `policy_node`: ROS 2 port of `Deploy_SimToReal_RL_Go2/deploy_real`, using Unitree ROS 2 topics and Kalman odometry input.
 3. `state_machine_node`: Controls modes (`standup -> policy -> search`) and handles cube-loss recovery.
 
@@ -11,15 +11,16 @@ ROS 2 Humble package with three nodes for Go2 push-cube deployment:
 - `cube_tracker_node`
   - Subscribes:
     - `/camera/color/image_raw` (`sensor_msgs/Image`)
-    - `/camera/depth/color/points` (`sensor_msgs/PointCloud2`)
-  - Runs YOLOE segmentation (class-filtered), samples mask pixels in pointcloud, rejects outliers with MAD filtering.
+    - `/camera/aligned_depth_to_color/image_raw` (`sensor_msgs/Image`)
+    - `/camera/color/camera_info` (`sensor_msgs/CameraInfo`)
+  - Resizes the wide camera frame to 640x360 for YOLOE, maps the mask back to the camera frame, and deprojects only sampled aligned-depth pixels before MAD filtering.
   - Publishes:
     - `/go2_fetch/cube_state` (`nav_msgs/Odometry`):
       - `pose.pose.position.x/y`: cube XY on floor frame
       - `twist.twist.linear.x/y`: cube XY velocity
     - `/go2_fetch/cube_visible` (`std_msgs/Bool`)
     - `/go2_fetch/cube_debug_image` (`sensor_msgs/Image`, optional)
-  - Processing timer: 20 Hz (configurable)
+  - Processing timer: 15 Hz (configurable)
 
 - `policy_node`
   - Subscribes:
@@ -268,7 +269,8 @@ If your RealSense topics come up under `/camera/camera/...`, override tracker to
 ```bash
 ros2 launch fetch fetch_realsense_cube_tracker.launch.py \
   image_topic:=/camera/camera/color/image_raw \
-  pointcloud_topic:=/camera/camera/depth/color/points
+  depth_topic:=/camera/camera/aligned_depth_to_color/image_raw \
+  camera_info_topic:=/camera/camera/color/camera_info
 ```
 
 Custom parameter file:

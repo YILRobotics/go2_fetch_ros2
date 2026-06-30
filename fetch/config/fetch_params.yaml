@@ -1,8 +1,9 @@
 cube_tracker_node:
   ros__parameters:
     # --- Input and output topics ---
-    image_topic: /camera/aligned_depth_to_color/image_raw
-    pointcloud_topic: /camera/depth/color/points
+    image_topic: /camera/color/image_raw
+    depth_topic: /camera/aligned_depth_to_color/image_raw
+    camera_info_topic: /camera/color/camera_info
     cube_state_topic: /go2_fetch/cube_state
     cube_visible_topic: /go2_fetch/cube_visible
     cube_marker_topic: /go2_fetch/cube_marker
@@ -13,12 +14,16 @@ cube_tracker_node:
     # --- Detector model ---
     # Open-vocabulary classes are applied to compatible YOLOE .pt models.
     # Exported ONNX/TensorRT models normally have their classes baked in.
-    model_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/yoloe-26s-seg_box.engine
+    model_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/yolo/yoloe-26n-seg.engine
     conf_threshold: 0.1
     yolo_classes: ["box"]
+    inference_width: 640
+    inference_height: 360
+    # D435 depth units are millimetres unless changed in the device configuration.
+    depth_scale_m: 0.001
 
     # --- Processing and diagnostics ---
-    processing_rate_hz: 25.0
+    processing_rate_hz: 15.0
     status_log_rate_hz: 2.0
     pipeline_log_rate_hz: 2.0
     enable_timing_log: true
@@ -36,7 +41,7 @@ cube_tracker_node:
     mask_erode_kernel_size: 5
     central_mask_keep_ratio: 0.3
 
-    # --- Point-cloud extraction and filtering ---
+    # --- Aligned-depth extraction and filtering ---
     max_mask_samples: 200
     min_inlier_points: 10
     min_depth_m: 0.1
