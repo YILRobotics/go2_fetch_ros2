@@ -66,7 +66,7 @@ def generate_launch_description() -> LaunchDescription:
             'enable_infra': False,
             'enable_infra1': False,
             'enable_infra2': False,
-            # 'initial_reset': True,
+            'initial_reset': True,
             # 'pointcloud__neon_.stream_filter': 2,
             # 'pointcloud__neon_.stream_index_filter': 0,
             # 'pointcloud__neon_.allow_no_texture_points': True,
@@ -134,7 +134,7 @@ def generate_launch_description() -> LaunchDescription:
             package="tf2_ros",
             executable="static_transform_publisher",
             output="screen" ,
-            arguments=["-0.11", "0.01", "-0.08", "0", "0.5236", "0", "base", "camera_link"]
+            arguments=["-0.11", "0.01", "-0.12", "0", "0.5236", "0", "base", "camera_link"]
         )
 
 

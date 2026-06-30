@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 import rclpy
+import tensorrt as trt
 import torch
 from geometry_msgs.msg import Point
 from nav_msgs.msg import Odometry
@@ -41,6 +42,167 @@ CONTROL_MODE_HIERARCHICAL_LOWCMD = "hierarchical_lowcmd"
 CONTROL_MODE_UNITREE_SPORT_HIGH_LEVEL = "unitree_sport_high_level"
 SPORT_API_ID_STOPMOVE = 1003
 SPORT_API_ID_MOVE = 1008
+
+
+class TensorRTPolicy:
+    """Run a single-input, single-output TensorRT policy on CUDA."""
+
+    _TORCH_DTYPES = {
+        trt.float32: torch.float32,
+        trt.float16: torch.float16,
+        trt.int8: torch.int8,
+        trt.int32: torch.int32,
+        trt.bool: torch.bool,
+    }
+
+    def __init__(self, engine_path: Path) -> None:
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                f"CUDA is required to run TensorRT policy engine: {engine_path}"
+            )
+
+        self._logger = trt.Logger(trt.Logger.WARNING)
+        self._runtime = trt.Runtime(self._logger)
+        self._engine = self._runtime.deserialize_cuda_engine(engine_path.read_bytes())
+        if self._engine is None:
+            raise RuntimeError(f"Failed to deserialize TensorRT engine: {engine_path}")
+
+        input_names = []
+        output_names = []
+        for index in range(self._engine.num_io_tensors):
+            name = self._engine.get_tensor_name(index)
+            mode = self._engine.get_tensor_mode(name)
+            if mode == trt.TensorIOMode.INPUT:
+                input_names.append(name)
+            elif mode == trt.TensorIOMode.OUTPUT:
+                output_names.append(name)
+        if len(input_names) != 1 or len(output_names) != 1:
+            raise RuntimeError(
+                f"TensorRT policy must have one input and one output; "
+                f"found {len(input_names)} inputs and {len(output_names)} outputs in {engine_path}"
+            )
+
+        self._input_name = input_names[0]
+        self._output_name = output_names[0]
+        self._input_shape = tuple(self._engine.get_tensor_shape(self._input_name))
+        self._output_shape = tuple(self._engine.get_tensor_shape(self._output_name))
+        if any(dimension < 0 for dimension in self._input_shape + self._output_shape):
+            raise RuntimeError(
+                f"Dynamic TensorRT policy shapes are not supported: {engine_path}"
+            )
+
+        input_trt_dtype = self._engine.get_tensor_dtype(self._input_name)
+        output_trt_dtype = self._engine.get_tensor_dtype(self._output_name)
+        try:
+            input_torch_dtype = self._TORCH_DTYPES[input_trt_dtype]
+            output_torch_dtype = self._TORCH_DTYPES[output_trt_dtype]
+        except KeyError as error:
+            raise RuntimeError(
+                f"Unsupported TensorRT policy data type in {engine_path}: {error.args[0]}"
+            ) from error
+
+        self._context = self._engine.create_execution_context()
+        if self._context is None:
+            raise RuntimeError(
+                f"Failed to create TensorRT execution context: {engine_path}"
+            )
+        self._input = torch.empty(
+            self._input_shape, dtype=input_torch_dtype, device="cuda"
+        )
+        self._output = torch.empty(
+            self._output_shape, dtype=output_torch_dtype, device="cuda"
+        )
+        self._host_input = torch.empty(
+            self._input_shape,
+            dtype=input_torch_dtype,
+            device="cpu",
+            pin_memory=True,
+        )
+        self._host_output = torch.empty(
+            self._output_shape,
+            dtype=output_torch_dtype,
+            device="cpu",
+            pin_memory=True,
+        )
+        self._host_input_numpy = self._host_input.numpy()
+        self._host_output_numpy = self._host_output.numpy()
+        self._stream = torch.cuda.Stream()
+        self._event_start = torch.cuda.Event(enable_timing=True)
+        self._event_after_h2d = torch.cuda.Event(enable_timing=True)
+        self._event_after_execute = torch.cuda.Event(enable_timing=True)
+        self._event_after_d2h = torch.cuda.Event(enable_timing=True)
+        self.last_timing_ms = {
+            "host_input": 0.0,
+            "h2d": 0.0,
+            "enqueue": 0.0,
+            "execute": 0.0,
+            "d2h": 0.0,
+            "sync_wait": 0.0,
+            "total": 0.0,
+        }
+        input_address_set = self._context.set_tensor_address(
+            self._input_name, self._input.data_ptr()
+        )
+        output_address_set = self._context.set_tensor_address(
+            self._output_name, self._output.data_ptr()
+        )
+        if not input_address_set or not output_address_set:
+            raise RuntimeError(
+                f"Failed to bind TensorRT policy buffers: {engine_path}"
+            )
+
+        warmup_input = np.zeros(self._input_shape, dtype=self._host_input_numpy.dtype)
+        for _ in range(50):
+            self.infer(warmup_input)
+        print(f"TensorRT warm-up finished: {engine_path}", flush=True)
+
+    @property
+    def input_shape(self) -> tuple[int, ...]:
+        return self._input_shape
+
+    @property
+    def output_shape(self) -> tuple[int, ...]:
+        return self._output_shape
+
+    def infer(self, observation: np.ndarray) -> np.ndarray:
+        call_start = time.perf_counter()
+        observation = np.asarray(observation)
+        if observation.shape == self._input_shape[1:]:
+            observation = observation.reshape(self._input_shape)
+        if observation.shape != self._input_shape:
+            raise ValueError(
+                f"TensorRT policy expected input shape {self._input_shape}, "
+                f"got {observation.shape}"
+            )
+
+        np.copyto(self._host_input_numpy, observation, casting="unsafe")
+        host_input_done = time.perf_counter()
+        with torch.cuda.stream(self._stream):
+            self._event_start.record(self._stream)
+            self._input.copy_(self._host_input, non_blocking=True)
+            self._event_after_h2d.record(self._stream)
+            enqueue_start = time.perf_counter()
+            if not self._context.execute_async_v3(self._stream.cuda_stream):
+                raise RuntimeError("TensorRT policy inference failed")
+            enqueue_done = time.perf_counter()
+            self._event_after_execute.record(self._stream)
+            self._host_output.copy_(self._output, non_blocking=True)
+            self._event_after_d2h.record(self._stream)
+        queued_done = time.perf_counter()
+        self._stream.synchronize()
+        sync_done = time.perf_counter()
+        self.last_timing_ms = {
+            "host_input": (host_input_done - call_start) * 1000.0,
+            "h2d": self._event_start.elapsed_time(self._event_after_h2d),
+            "enqueue": (enqueue_done - enqueue_start) * 1000.0,
+            "execute": self._event_after_h2d.elapsed_time(
+                self._event_after_execute
+            ),
+            "d2h": self._event_after_execute.elapsed_time(self._event_after_d2h),
+            "sync_wait": (sync_done - queued_done) * 1000.0,
+            "total": (sync_done - call_start) * 1000.0,
+        }
+        return self._host_output_numpy.reshape(-1)
 
 
 class RealPolicyNode(Node):
@@ -188,15 +350,16 @@ class RealPolicyNode(Node):
         self.declare_parameter("command_velocity_marker_frame", "base")
         self.declare_parameter("command_velocity_marker_z_offset", 0.25)
         self.declare_parameter("command_velocity_marker_scale", 0.25)
+        self.declare_parameter("velocity_marker_rate_hz", 15.0)
 
         # Policy models and inference rates.
         self.declare_parameter(
             "high_level_policy_path",
-            "logs/rsl_rl/unitree_go2_pushcube_4l/2026-05-15_02-52-05_cam_6/exported/policy.pt",
+            "logs/rsl_rl/unitree_go2_pushcube_4l/2026-05-15_02-52-05_cam_6/exported/policy.engine",
         )
         self.declare_parameter(
             "low_level_policy_path",
-            "logs/rsl_rl/unitree_go2_velocity_4l/2026-04-05_12-01-56_walk_2/exported/policy.pt",
+            "logs/rsl_rl/unitree_go2_velocity_4l/2026-04-05_12-01-56_walk_2/exported/policy.engine",
         )
         self.declare_parameter("model_loop_period_s", 0.02)
         self.declare_parameter("high_level_rate_hz", 15.0)
@@ -434,11 +597,11 @@ class RealPolicyNode(Node):
         else:
             self.get_logger().info("3] ---> Loading high-level and low-level policies")
         high_level_path = self._resolve_policy_path("high_level_policy_path")
-        self.high_level_policy = torch.jit.load(high_level_path).eval()
+        self.high_level_policy = TensorRTPolicy(high_level_path)
         self.low_level_policy = None
         if not self._uses_unitree_sport_high_level():
             low_level_path = self._resolve_policy_path("low_level_policy_path")
-            self.low_level_policy = torch.jit.load(low_level_path).eval()
+            self.low_level_policy = TensorRTPolicy(low_level_path)
 
         self.default_isaac = [0.1, -0.1, 0.1, -0.1, 0.8, 0.8, 1, 1, -1.5, -1.5, -1.5, -1.5]
         self.base_lin_vel = np.array([0, 0, 0])
@@ -459,6 +622,8 @@ class RealPolicyNode(Node):
         self.robot_yaw = 0.0
         self.cube_pos_xy = np.zeros(2, dtype=np.float32)
         self.cube_lin_vel_xy = np.zeros(2, dtype=np.float32)
+        self._previous_cube_pos_world_xy = None
+        self._previous_cube_pos_time = -math.inf
         self._last_cube_state_time = -math.inf
         self._cube_state_stale_logged = False
         self._cube_state_tf_warned = False
@@ -470,6 +635,7 @@ class RealPolicyNode(Node):
         self._cube_goal_enter_time = -math.inf
         self._last_robot_odom_time = -math.inf
         self._next_high_level_time = -math.inf
+        self._next_velocity_marker_time = -math.inf
         self._last_high_level_toggle_pressed = False
         self._last_goal_set_button_pressed = False
         self._last_cube_recovery_toggle_pressed = False
@@ -529,6 +695,8 @@ class RealPolicyNode(Node):
         path = Path(str(self.get_parameter(parameter_name).value)).expanduser()
         if not path.is_file():
             raise FileNotFoundError(f"{parameter_name} does not exist: {path}")
+        if path.suffix != ".engine":
+            raise ValueError(f"{parameter_name} must point to a .engine file: {path}")
         return path
 
     def _initialize_robot_interfaces(self) -> None:
@@ -619,29 +787,41 @@ class RealPolicyNode(Node):
     def _cube_state_callback(self, msg: Odometry) -> None:
         if self.fake_cube_observation_mode:
             return
-        transformed_state = self._transform_cube_state_to_policy_frame(msg)
-        if transformed_state is None:
+        pos_xy = self._transform_cube_position_to_policy_frame(msg)
+        if pos_xy is None:
             return
-        pos_xy, vel_xy = transformed_state
+
+        # Estimate velocity only after the cube position is in the fixed policy
+        # world frame. Differentiating the tracker position while it is in the
+        # moving base frame makes a stationary cube appear to move opposite the
+        # robot.
+        now = time.monotonic()
+        sample_time = now
+        vel_xy = np.zeros(2, dtype=np.float32)
+        if self._previous_cube_pos_world_xy is not None:
+            dt = sample_time - self._previous_cube_pos_time
+            timeout_s = float(self.get_parameter("cube_state_timeout_s").value)
+            if dt >= 1e-3 and (timeout_s <= 0.0 or dt <= timeout_s):
+                vel_xy = (pos_xy - self._previous_cube_pos_world_xy) / dt
+
         self.cube_pos_xy[:] = pos_xy
         self.cube_lin_vel_xy[:] = vel_xy
-        self._last_cube_state_time = time.monotonic()
+        self._previous_cube_pos_world_xy = pos_xy.copy()
+        self._previous_cube_pos_time = sample_time
+        self._last_cube_state_time = now
         self._cube_state_stale_logged = False
 
-    def _transform_cube_state_to_policy_frame(
+    def _transform_cube_position_to_policy_frame(
         self, msg: Odometry
-    ) -> tuple[np.ndarray, np.ndarray] | None:
+    ) -> np.ndarray | None:
         source_frame = msg.header.frame_id
         target_frame = str(self.get_parameter("policy_world_frame").value)
         pos_xy = np.array(
             [msg.pose.pose.position.x, msg.pose.pose.position.y], dtype=np.float32
         )
-        vel_xy = np.array(
-            [msg.twist.twist.linear.x, msg.twist.twist.linear.y], dtype=np.float32
-        )
         if not source_frame or source_frame == target_frame:
             self._cube_state_tf_warned = False
-            return pos_xy, vel_xy
+            return pos_xy
 
         timeout = Duration(
             seconds=float(self.get_parameter("cube_state_tf_timeout_s").value)
@@ -675,15 +855,8 @@ class RealPolicyNode(Node):
             ],
             dtype=np.float32,
         )
-        rotated_vel = np.array(
-            [
-                cos_yaw * vel_xy[0] - sin_yaw * vel_xy[1],
-                sin_yaw * vel_xy[0] + cos_yaw * vel_xy[1],
-            ],
-            dtype=np.float32,
-        )
         rotated_pos += np.array([translation.x, translation.y], dtype=np.float32)
-        return rotated_pos, rotated_vel
+        return rotated_pos
 
     def _apply_fake_cube_observation(self) -> None:
         self.cube_pos_xy[:] = self._xy_parameter("fake_cube_position_xy")
@@ -758,15 +931,15 @@ class RealPolicyNode(Node):
         marker.action = Marker.ADD
         marker.pose.position.x = float(self.goal_xy[0])
         marker.pose.position.y = float(self.goal_xy[1])
-        marker.pose.position.z = 0.01
+        marker.pose.position.z = 0.0
         marker.pose.orientation.w = 1.0
         marker.scale.x = 2.0 * radius
         marker.scale.y = 2.0 * radius
-        marker.scale.z = 0.02
-        marker.color.r = 0.0 if self._goal_condition_reached else 1.0
+        marker.scale.z = 0.01
+        marker.color.r = 0.2 if self._goal_condition_reached else 1.0
         marker.color.g = 1.0 if self._goal_condition_reached else 0.0
-        marker.color.b = 0.0
-        marker.color.a = 0.45
+        marker.color.b = 0.2
+        marker.color.a = 0.7
         self.goal_marker_publisher.publish(marker)
 
     def _publish_command_velocity_marker(self) -> None:
@@ -844,6 +1017,17 @@ class RealPolicyNode(Node):
         marker.color.a = 0.9
         marker.lifetime = Duration(seconds=0.25).to_msg()
         self.current_velocity_marker_publisher.publish(marker)
+
+    def _publish_velocity_markers_if_due(self) -> None:
+        rate_hz = float(self.get_parameter("velocity_marker_rate_hz").value)
+        if rate_hz <= 0.0:
+            return
+        now = time.monotonic()
+        if now < self._next_velocity_marker_time:
+            return
+        self._next_velocity_marker_time = now + 1.0 / rate_hz
+        self._publish_command_velocity_marker()
+        self._publish_current_velocity_marker()
 
     def _xy_parameter(self, name: str) -> np.ndarray:
         values = list(self.get_parameter(name).value)
@@ -1159,14 +1343,7 @@ class RealPolicyNode(Node):
             size=int(self.get_parameter("high_level_num_obs").value),
         ).astype(np.float32)
         if self.use_high_level_policy:
-            with torch.inference_mode():
-                self.high_level_action = (
-                    self.high_level_policy(torch.from_numpy(self.high_level_obs).unsqueeze(0))
-                    .detach()
-                    .cpu()
-                    .numpy()
-                    .reshape(-1)
-                )
+            self.high_level_action = self.high_level_policy.infer(self.high_level_obs)
         else:
             self.high_level_action = self._fake_rng.uniform(
                 observation_min, observation_max, size=3
@@ -1176,8 +1353,7 @@ class RealPolicyNode(Node):
             -self.config.max_cmd,
             self.config.max_cmd,
         )
-        self._publish_command_velocity_marker()
-        self._publish_current_velocity_marker()
+        self._publish_velocity_markers_if_due()
 
         if self._uses_unitree_sport_high_level():
             log_every = max(
@@ -1199,14 +1375,7 @@ class RealPolicyNode(Node):
             size=int(self.get_parameter("low_level_num_obs").value),
         ).astype(np.float32)
         self.obs[6:9] = self.high_level_action[:3]
-        with torch.inference_mode():
-            self.action = (
-                self.low_level_policy(torch.from_numpy(self.obs).unsqueeze(0))
-                .detach()
-                .cpu()
-                .numpy()
-                .reshape(-1)
-            )
+        self.action = self.low_level_policy.infer(self.obs)
 
         log_every = max(
             1,
@@ -1365,8 +1534,7 @@ class RealPolicyNode(Node):
             self.cmd[:] = self._joystick_velocity_command()
         command_done = time.perf_counter()
 
-        self._publish_command_velocity_marker()
-        self._publish_current_velocity_marker()
+        self._publish_velocity_markers_if_due()
         markers_done = time.perf_counter()
 
         self.obs = np.concatenate(
@@ -1384,14 +1552,7 @@ class RealPolicyNode(Node):
             self.obs, int(self.get_parameter("low_level_num_obs").value), "Low-level"
         )
         observation_done = time.perf_counter()
-        with torch.inference_mode():
-            self.action = (
-                self.low_level_policy(torch.from_numpy(self.obs).unsqueeze(0))
-                .detach()
-                .cpu()
-                .numpy()
-                .reshape(-1)
-            )
+        self.action = self.low_level_policy.infer(self.obs)
         inference_done = time.perf_counter()
         if self.action.size != self.config.num_actions:
             raise RuntimeError(
@@ -1424,6 +1585,7 @@ class RealPolicyNode(Node):
         )
         if profile_every > 0 and self.counter % profile_every == 0:
             torque_ms, crc_ms, publish_ms = self._last_send_cmd_timing_ms
+            trt_timing = self.low_level_policy.last_timing_ms
             print(
                 "Policy step profile "
                 f"step={self.counter} "
@@ -1432,6 +1594,13 @@ class RealPolicyNode(Node):
                 f"markers={(markers_done - command_done) * 1000.0:.2f}ms "
                 f"observation={(observation_done - markers_done) * 1000.0:.2f}ms "
                 f"inference={(inference_done - observation_done) * 1000.0:.2f}ms "
+                f"trt_host_input={trt_timing['host_input']:.2f}ms "
+                f"trt_h2d={trt_timing['h2d']:.2f}ms "
+                f"trt_enqueue={trt_timing['enqueue']:.2f}ms "
+                f"trt_execute={trt_timing['execute']:.2f}ms "
+                f"trt_d2h={trt_timing['d2h']:.2f}ms "
+                f"trt_sync_wait={trt_timing['sync_wait']:.2f}ms "
+                f"trt_total={trt_timing['total']:.2f}ms "
                 f"motor_build={(motor_command_done - inference_done) * 1000.0:.2f}ms "
                 f"send_total={(send_done - motor_command_done) * 1000.0:.2f}ms "
                 f"torque_limit={torque_ms:.2f}ms "
@@ -1481,8 +1650,7 @@ class RealPolicyNode(Node):
             self.cmd[:] = 0.0
             self._publish_sport_stop_move()
 
-        self._publish_command_velocity_marker()
-        self._publish_current_velocity_marker()
+        self._publish_velocity_markers_if_due()
         self._record_policy_command_inputs(ang_vel)
         return self.high_level_obs
 
@@ -1497,16 +1665,9 @@ class RealPolicyNode(Node):
             self.high_level_obs = self._build_high_level_observation(
                 ang_vel, gravity_orientation, qj_obs, dqj_obs
             )
-            with torch.inference_mode():
-                self.high_level_action = (
-                    self.high_level_policy(
-                        torch.from_numpy(self.high_level_obs).unsqueeze(0)
-                    )
-                    .detach()
-                    .cpu()
-                    .numpy()
-                    .reshape(-1)
-                )
+            self.high_level_action = self.high_level_policy.infer(
+                self.high_level_obs
+            )
             if self.high_level_action.size != 3:
                 raise RuntimeError(
                     f"High-level policy returned {self.high_level_action.size} actions; expected 3"
@@ -1798,6 +1959,12 @@ class RealPolicyNode(Node):
         lf_foot_xy = self._lookup_lf_foot_xy()
         if self.fake_cube_observation_mode:
             self._apply_fake_cube_observation()
+        # Training used a goal-centered world frame with goal_xy == [0, 0].
+        # Keep all displacement vectors unchanged, but translate absolute
+        # positions so deployment has the same world-origin convention.
+        robot_pos_goal_frame = self.robot_pos_xy - self.goal_xy
+        cube_pos_goal_frame = self.cube_pos_xy - self.goal_xy
+        goal_pos_goal_frame = np.zeros(2, dtype=np.float32)
         obs = np.concatenate(
             [
                 np.asarray(ang_vel, dtype=np.float32) * 0.2,
@@ -1805,11 +1972,11 @@ class RealPolicyNode(Node):
                 qj_obs,
                 dqj_obs * 0.05,
                 self.high_level_action,
-                self.robot_pos_xy,
+                robot_pos_goal_frame,
                 self.robot_lin_vel_world_xy,
-                self.cube_pos_xy,
+                cube_pos_goal_frame,
                 self.cube_lin_vel_xy,
-                self.goal_xy,
+                goal_pos_goal_frame,
                 np.array([self.goal_radius], dtype=np.float32),
                 self.goal_xy - self.cube_pos_xy,
                 self.cube_pos_xy - lf_foot_xy,

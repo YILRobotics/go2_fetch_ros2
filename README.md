@@ -189,25 +189,58 @@ echo "$CYCLONEDDS_URI"  # should print empty line
 
 ## TensorRT Policy Engines
 
-### Make Engine File for the Walk Policy
+### Make Engine File from .onnx file example
 
 ```bash
 cd /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/unitree_go2_velocity_4l/2026-04-05_12-01-56_walk_2
 
 /usr/src/tensorrt/bin/trtexec \
   --onnx=policy.onnx \
-  --saveEngine=policy.engine
+  --saveEngine=policy.engine \
+  --fp16
 ```
 
-### Make Engine File for the Pushcube Policy
 
+A TensorRT .engine is a serialized optimized execution plan. TensorRT does not provide the same one-line model interface,
+so the added TensorRTPolicy wrapper must perform those missing tasks:
+
+- Deserialize the .engine file.
+- Find its input and output tensor names.
+- Read expected shapes and data types.
+- Validate that it has one input and one output.
+- Create a TensorRT execution context.
+- Allocate CUDA input/output memory using Torch tensors.
+- Bind those memory addresses to TensorRT.
+- Copy each NumPy observation to GPU memory.
+- Execute inference on a CUDA stream.
+- Wait for inference to finish.
+- Copy the result back to NumPy.
+- Report useful errors for wrong shapes, unsupported types, missing CUDA, or failed inference.
+
+
+Check speed:
 ```bash
-cd /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/unitree_go2_pushcube_4l/2026-05-15_02-52-05_cam_6
-
-/usr/src/tensorrt/bin/trtexec \
-  --onnx=policy.onnx \
-  --saveEngine=policy.engine
+/usr/src/tensorrt/bin/trtexec --loadEngine=policy.engine
 ```
+
+Walking policy:
+  GPU compute: 0.052 ms
+  End-to-end TensorRT latency: 0.069 ms
+
+  Your node reports 16–29 ms, so TensorRT itself is not the bottleneck. Over 99% of “inference” time is in the Python
+    wrapper:
+
+  - NumPy → Torch conversion
+  - Torch CPU → CUDA copy
+  - CUDA stream synchronization
+  - CUDA → Torch CPU copy
+  - Torch → NumPy conversion
+  - Possible GPU contention with camera inference
+
+
+
+[policy_node-1] Policy cycle time: avg=32.99 ms, min=27.01 ms, max=41.63 ms (50 cycles)
+[policy_node-1] Policy step profile step=650 input=0.20ms command=0.08ms markers=0.01ms observation=0.13ms inference=30.77ms trt_host_input=0.03ms trt_h2d=9.15ms trt_enqueue=3.50ms trt_execute=7.03ms trt_d2h=7.24ms trt_sync_wait=3.43ms trt_total=30.68ms motor_build=0.19ms send_total=1.31ms torque_limit=0.28ms crc=0.73ms publish=0.29ms record=0.05ms total=32.74ms
 
 ## Robot Motion Commands
 
@@ -364,7 +397,21 @@ rviz2 -d /home/ferdinand/unitree/src/go2_fetch_ros2/fetch/rviz/realsense.rviz
 ```bash
 cd rosbags
 ros2 bag record -e "(/go2_fetch/.*|/odometry/filtered|/tf|/camera/depth/color/points|/camera/color/image_raw/compressed|/robot_description|/tf_static|/lf/lowstate)" -x ".*compressedDepth.*"
+
+ros2 bag record -e "(/go2_fetch/.*|/odometry/filtered|/tf|/robot_description|/tf_static|/lf/lowstate)"
 ```
+
+Now the cause is clear: rosbag’s default 100 MiB cache fills after about 7.3 seconds—exactly when cube
+  tracking stops. Flushing that cache causes enough DDS/I/O pressure that the tracker’s best-effort camera
+  subscriptions stop receiving complete messages.
+
+  Try direct writing with no cache:
+
+  ros2 bag record --max-cache-size 0 \
+    -e "(/go2_fetch/.*|/odometry/filtered|/tf|/camera/depth/color/points|/camera/color/image_raw/
+    compressed|/robot_description|/tf_static|/lf/lowstate)" \
+    -x ".*compressedDepth.*"
+    
 
 ### Check Disk Usage
 

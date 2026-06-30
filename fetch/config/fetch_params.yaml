@@ -72,7 +72,7 @@ policy_node:
     auto_switch_to_low_level: false
     # Fake observation mode always prevents command output.
     send_commands: true
-    use_high_level_policy: false
+    use_high_level_policy: true
     wait_for_start_button: true
     wait_for_a_button: true
 
@@ -86,7 +86,7 @@ policy_node:
     cube_recovery_toggle_button: "B"
 
     # --- Goal definition and completion condition ---
-    goal_xy: [1.0, 0.0]
+    goal_xy: [0.0, 0.0] # same as training
     # Included in the trained high-level policy observation.
     goal_radius: 0.2
     # Completion requires the cube to remain within this radius for the hold
@@ -139,10 +139,11 @@ policy_node:
     command_velocity_marker_frame: base
     command_velocity_marker_z_offset: 0.25
     command_velocity_marker_scale: 0.25
+    velocity_marker_rate_hz: 15.0
 
     # --- Policy models and inference rates ---
-    high_level_policy_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/unitree_go2_pushcube_4l/2026-06-30_13-49-47_ff_5_1/policy.pt
-    low_level_policy_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/unitree_go2_velocity_4l/2026-06-30_11-11-40_walk_ff_5/policy.pt
+    high_level_policy_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/unitree_go2_pushcube_4l/2026-06-30_13-49-47_ff_5_1/policy.engine
+    low_level_policy_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/unitree_go2_velocity_4l/2026-06-30_11-11-40_walk_ff_5/policy.engine
     # 0.02 seconds targets a 50 Hz low-level policy loop.
     model_loop_period_s: 0.02
     high_level_rate_hz: 15.0
@@ -165,7 +166,7 @@ policy_node:
     dof_vel_scale: 0.05
     # Per-sensor force readings measured while no foot is touching the ground.
     # Order of real robot is: [FR, FL, RR, RL]. Order in Simulation is: [FL, FR, RL, RR]. Reordering added
-    foot_force_offset: [3.0, 1.0, 3.0, 3.0]
+    foot_force_offset: [4.0, 1.0, 5.0, 5.0]
     # Clamp offset-corrected raw readings to match the Isaac Lab observation.
     foot_force_clip_max: 150.0
     # Divisor used to normalize the four LowState foot-force readings.
@@ -174,7 +175,8 @@ policy_node:
     cmd_scale: [1.0, 1.0, 1.0]
     num_actions: 12
     num_obs: 49
-    max_cmd: [0.8, 0.6, 1.0] ###
+    # max_cmd: [0.8, 0.6, 1.0] ###
+    max_cmd: [0.4, 0.4, 0.5] ### max for hihg level
 
     # --- Leg motor mapping, gains, and limits ---
     leg_joint2motor_idx: [3, 0, 9, 6, 4, 1, 10, 7, 5, 2, 11, 8]
@@ -182,7 +184,7 @@ policy_node:
     kps: [25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0]
     kds: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
     # Per-motor feed-forward torque limits [Nm].
-    torque_limits: [20.0, 20.0, 18.0, 18.0, 20.0, 20.0, 18.0, 20.0, 20.0, 20.0, 18.0, 20.0]
+    torque_limits: [22.0, 22.0, 20.0, 20.0, 22.0, 22.0, 20.0, 22.0, 22.0, 22.0, 20.0, 22.0]
     weak_motor: []
 
     # --- Optional arm and waist motors ---

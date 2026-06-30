@@ -13,6 +13,23 @@ from typing import Sequence
 import numpy as np
 
 
+def _build_crc32_mpeg2_table() -> tuple[int, ...]:
+    polynomial = 0x04C11DB7
+    table = []
+    for value in range(256):
+        crc = value << 24
+        for _ in range(8):
+            if crc & 0x80000000:
+                crc = ((crc << 1) & 0xFFFFFFFF) ^ polynomial
+            else:
+                crc = (crc << 1) & 0xFFFFFFFF
+        table.append(crc)
+    return tuple(table)
+
+
+_CRC32_MPEG2_TABLE = _build_crc32_mpeg2_table()
+
+
 class KeyMap:
     R1 = 0
     L1 = 1
@@ -158,31 +175,27 @@ def compute_go2_lowcmd_crc(cmd) -> int:
     data.append(cmd.crc)
 
     packed = struct.pack(pack_fmt, *data)
-    words = []
-    for i in range((len(packed) >> 2) - 1):
-        words.append(
-            (packed[i * 4 + 3] << 24)
-            | (packed[i * 4 + 2] << 16)
-            | (packed[i * 4 + 1] << 8)
-            | packed[i * 4]
-        )
-    return _crc32_words(words)
+    return _crc32_packed_words(packed)
+
+
+def _crc32_packed_words(packed: bytes) -> int:
+    crc = 0xFFFFFFFF
+    table = _CRC32_MPEG2_TABLE
+    for offset in range(0, len(packed) - 4, 4):
+        for byte_index in (offset + 3, offset + 2, offset + 1, offset):
+            table_index = ((crc >> 24) ^ packed[byte_index]) & 0xFF
+            crc = ((crc << 8) & 0xFFFFFFFF) ^ table[table_index]
+    return crc
 
 
 def _crc32_words(words: Sequence[int]) -> int:
     crc = 0xFFFFFFFF
-    polynomial = 0x04C11DB7
+    table = _CRC32_MPEG2_TABLE
     for word in words:
-        bit = 1 << 31
-        for _ in range(32):
-            if crc & 0x80000000:
-                crc = ((crc << 1) & 0xFFFFFFFF) ^ polynomial
-            else:
-                crc = (crc << 1) & 0xFFFFFFFF
-            if word & bit:
-                crc ^= polynomial
-            bit >>= 1
-    return crc & 0xFFFFFFFF
+        for shift in (24, 16, 8, 0):
+            table_index = ((crc >> 24) ^ ((word >> shift) & 0xFF)) & 0xFF
+            crc = ((crc << 8) & 0xFFFFFFFF) ^ table[table_index]
+    return crc
 
 
 def set_motor_cmd_position(motor_cmd, value: float) -> None:
