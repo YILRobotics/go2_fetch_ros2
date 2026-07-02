@@ -7,12 +7,13 @@ import gi
 gi.require_version('Gst', '1.0')
 from gi.repository import Gst
 
+import cv2
 import numpy as np
 import rclpy
 from cv_bridge import CvBridge
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import CompressedImage, Image
 
 #   1. Receives camera packets from the Go2 at 230.1.1.1:1720. 
 #      230.1.1.1:1720 is the network destination used by the Go2 camera
@@ -34,6 +35,8 @@ class Go2SocketCameraNode(Node):
         self.declare_parameter('interface_ip', '192.168.123.18')
         self.declare_parameter('network_interface', '')
         self.declare_parameter('image_topic', '/go2/camera/image_raw')
+        self.declare_parameter('compressed_image_topic', '/go2/camera/image_raw/compressed')
+        self.declare_parameter('jpeg_quality', 90)
         self.declare_parameter('frame_id', 'go2_camera_optical_frame')
         self.declare_parameter('latency_ms', 100)
 
@@ -42,8 +45,13 @@ class Go2SocketCameraNode(Node):
         interface_ip = self.get_parameter('interface_ip').value
         interface = self.get_parameter('network_interface').value
         image_topic = self.get_parameter('image_topic').value
+        compressed_image_topic = self.get_parameter('compressed_image_topic').value
+        self.jpeg_quality = int(self.get_parameter('jpeg_quality').value)
         self.frame_id = self.get_parameter('frame_id').value
         latency_ms = self.get_parameter('latency_ms').value
+
+        if not 0 <= self.jpeg_quality <= 100:
+            raise ValueError('jpeg_quality must be between 0 and 100')
 
         if not interface and interface_ip:
             interface = self._interface_name_for_ip(interface_ip)
@@ -55,6 +63,9 @@ class Go2SocketCameraNode(Node):
 
         self.image_pub = self.create_publisher(
             Image, image_topic, qos_profile_sensor_data
+        )
+        self.compressed_image_pub = self.create_publisher(
+            CompressedImage, compressed_image_topic, qos_profile_sensor_data
         )
         self.bridge = CvBridge()
         self.frame_count = 0
@@ -101,7 +112,7 @@ class Go2SocketCameraNode(Node):
         interface_text = interface or 'the system multicast route'
         self.get_logger().info(
             f'Receiving RTP/H.264 from {group}:{port} on {interface_text}; '
-            f'publishing {image_topic}'
+            f'publishing {image_topic} and {compressed_image_topic}'
         )
         self.monitor_timer = self.create_timer(1.0, self._monitor_pipeline)
 
@@ -148,6 +159,18 @@ class Go2SocketCameraNode(Node):
         image_msg.header.stamp = self.get_clock().now().to_msg()
         image_msg.header.frame_id = self.frame_id
         self.image_pub.publish(image_msg)
+
+        encoded, jpeg = cv2.imencode(
+            '.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality]
+        )
+        if encoded:
+            compressed_msg = CompressedImage()
+            compressed_msg.header = image_msg.header
+            compressed_msg.format = 'bgr8; jpeg compressed bgr8'
+            compressed_msg.data = jpeg.tobytes()
+            self.compressed_image_pub.publish(compressed_msg)
+        else:
+            self.get_logger().error('Failed to JPEG-compress camera frame')
         self.frame_count += 1
 
         if self.frame_count == 1:

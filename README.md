@@ -398,7 +398,9 @@ rviz2 -d /home/ferdinand/unitree/src/go2_fetch_ros2/fetch/rviz/realsense.rviz
 cd rosbags
 ros2 bag record -e "(/go2_fetch/.*|/go2_odometry/filtered|/tf|/camera/depth/color/points|/camera/color/image_raw/compressed|/robot_description|/tf_static|/lf/lowstate)" -x ".*compressedDepth.*"
 
-ros2 bag record -e "(/go2_fetch/.*|/go2_odometry/filtered|/tf|/robot_description|/tf_static|/lf/lowstate)"
+ros2 bag record -e "(/go2_fetch/.*|/go2_odometry.*|/tf|/robot_description|/tf_static|/lf/lowstate|/go2/camera/image_raw/compressed)" -x ".*compressedDepth."
+
+ros2 bag record -e "(/go2_fetch/.*|/go2_odometry.*|/tf|/robot_description|/tf_static|/lf/lowstate|/go2/camera/image_raw/compressed|/camera/depth/color/points|/camera/color/image_raw/compressed)" -x ".*compressedDepth."
 ```
 
 Now the cause is clear: rosbag’s default 100 MiB cache fills after about 7.3 seconds—exactly when cube

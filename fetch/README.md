@@ -20,7 +20,7 @@ ROS 2 Humble package for Go2 push-cube deployment:
       - `pose.pose.position.x/y`: cube XY on floor frame
       - `twist.twist.linear.x/y`: cube XY velocity
     - `/go2_fetch/cube_visible` (`std_msgs/Bool`)
-    - `/go2_fetch/cube_debug_image` (`sensor_msgs/Image`, optional)
+    - `/go2_fetch/cube_debug_image/compressed` (`sensor_msgs/CompressedImage`, JPEG, optional)
   - Processing timer: 15 Hz (configurable)
 
 - `low_level_policy_node`

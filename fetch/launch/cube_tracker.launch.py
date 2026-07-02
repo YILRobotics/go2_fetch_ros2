@@ -45,18 +45,17 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[{
             'enable_color': True,
             'enable_depth': True,
-            'pointcloud__neon_.enable': False,
             'pointcloud.enable': False,
-            'pointcloud.stream_filter': 0,
-            'pointcloud.stream_index_filter': 0,
-            'pointcloud.ordered_pc': True,
+            'pointcloud__neon_.enable': True,
+            'pointcloud__neon_.stream_filter': 2, # 2 is Color texture
+            'pointcloud__neon_.stream_index_filter': 0,
+            'pointcloud__neon_.ordered_pc': True,
             'pointcloud__neon_.ordered_pc': True,
             'align_depth.enable': True,
             # 'depth_module.profile': '640x480x30',
             # 'rgb_camera.profile': '640x480x30',
-            'depth_module.profile': '1280x720x30',
-            'rgb_camera.profile': '1280x720x30',
-            # Fixed RealSense post-processing filters for lighter/cleaner aligned depth.
+            'depth_module.depth_profile': '1280x720x30',
+            'rgb_camera.color_profile': '1280x720x30',
             'decimation_filter.enable': True,
             'decimation_filter.filter_magnitude': 4,
             'spatial_filter.enable': True,
@@ -68,10 +67,12 @@ def generate_launch_description() -> LaunchDescription:
             'enable_infra': False,
             'enable_infra1': False,
             'enable_infra2': False,
+            'color_qos': 'SENSOR_DATA',
+            'depth_qos': 'SENSOR_DATA',
+            'color_info_qos': 'SENSOR_DATA',
+            'depth_info_qos': 'SENSOR_DATA',
+            'pointcloud__neon_.pointcloud_qos': 'SENSOR_DATA',
             'initial_reset': True,
-            # 'pointcloud__neon_.stream_filter': 2,
-            # 'pointcloud__neon_.stream_index_filter': 0,
-            # 'pointcloud__neon_.allow_no_texture_points': True,
         }],
         condition=UnlessCondition(use_dummy_publisher),
     )
@@ -141,7 +142,7 @@ def generate_launch_description() -> LaunchDescription:
             package="tf2_ros",
             executable="static_transform_publisher",
             output="screen" ,
-            arguments=["-0.11", "0.01", "-0.12", "0", "0.5236", "0", "base", "camera_link"]
+            arguments=["-0.1", "0.01", "-0.1", "0", "0.5236", "0", "base", "camera_link"]
         )
 
 

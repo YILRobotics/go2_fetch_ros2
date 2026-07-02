@@ -610,6 +610,16 @@ class LowLevelPolicyNode final : public rclcpp::Node
         transition(fetch_interfaces::msg::ControlState::MOVE_TO_DEFAULT, "MOVE_TO_DEFAULT");
       return;
     }
+    // Allow SELECT to return to the ground during both the startup sequence and
+    // WAIT_FOR_A, as well as while the policy is running. Ignore a held SELECT
+    // once the ground transition has already started.
+    if (pressed(kSelectButton) && !transition_ground_)
+    {
+      ground_start_ = s;
+      transition_ground_ = true;
+      transition(fetch_interfaces::msg::ControlState::MOVE_TO_DEFAULT, "MOVE_TO_GROUND");
+      return;
+    }
     if (state == fetch_interfaces::msg::ControlState::MOVE_TO_DEFAULT)
     {
       move_default(s);
@@ -628,13 +638,6 @@ class LowLevelPolicyNode final : public rclcpp::Node
       publish_safe_hold(s);
       return;
     }
-    if (pressed(kSelectButton))
-    {
-      ground_start_ = s;
-      transition_ground_ = true;
-      transition(fetch_interfaces::msg::ControlState::MOVE_TO_DEFAULT, "MOVE_TO_GROUND");
-      return;
-    }
     run_policy(s, start, deadline);
   }
   // MOVE_TO_DEFAULT is also reused for the SELECT-to-ground interpolation.
@@ -643,14 +646,22 @@ class LowLevelPolicyNode final : public rclcpp::Node
   {
     if (transition_ground_)
     {
-      double p = std::min(1.0,
-        std::chrono::duration<double>(Clock::now() - phase_start_).count() / 0.6);
+      constexpr double lie_down_duration_s = 3.0;
+      constexpr double settle_duration_s = 1.0;
+      const double elapsed =
+          std::chrono::duration<double>(Clock::now() - phase_start_).count();
+      const double linear_progress = std::clamp(elapsed / lie_down_duration_s, 0.0, 1.0);
+      // Smoothstep gives zero commanded velocity at both ends of the movement,
+      // avoiding the abrupt stop produced by a linear interpolation.
+      const double p = linear_progress * linear_progress * (3.0 - 2.0 * linear_progress);
       static const std::array<double, 12> lie{0, 1.36, -2.65, 0, 1.36, -2.65, -.2, 1.36, -2.65, .2,
                                               1.36, -2.65};
       for (size_t i = 0; i < 12; ++i)
         set_motor(i, (1 - p) * ground_start_.motor_state[i].q + p * lie[i], 60, 5);
       publish();
-      if (p >= 1)
+      // Keep position control active at the final pose long enough for the body
+      // to settle completely before releasing motor torque.
+      if (elapsed >= lie_down_duration_s + settle_duration_s)
       {
         transition_ground_ = false;
         transition(fetch_interfaces::msg::ControlState::ZERO_TORQUE, "ZERO_TORQUE");

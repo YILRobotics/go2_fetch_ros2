@@ -22,6 +22,7 @@ from nav_msgs.msg import Odometry
 from rcl_interfaces.msg import SetParametersResult
 from rclpy.duration import Duration
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.signals import SignalHandlerOptions
 from rclpy.time import Time
 import tf2_ros
@@ -296,6 +297,7 @@ class HighLevelPolicyNode(Node):
 
         # Cube-loss recovery rotation.
         self.declare_parameter("cube_state_timeout_s", 0.5)
+        self.declare_parameter("cube_stale_stop_ramp_s", 1.0)
         self.declare_parameter("cube_recovery_angular_cmd", 0.5)
         self.declare_parameter("cube_recovery_front_angle_deg", 20.0)
         self.declare_parameter("cube_recovery_max_rotation_deg", 360.0)
@@ -556,6 +558,8 @@ class HighLevelPolicyNode(Node):
         self._last_goal_set_button_pressed = False
         self._last_cube_recovery_toggle_pressed = False
         self._cube_tracking_lost = False
+        self._stale_cube_ramp_start_time = -math.inf
+        self._stale_cube_ramp_start_cmd = np.zeros(3, dtype=np.float32)
         self._cube_recovery_active = False
         self._cube_recovery_direction = 1.0
         self._cube_recovery_last_yaw = self.robot_yaw
@@ -948,6 +952,7 @@ class HighLevelPolicyNode(Node):
     def _set_high_level_policy_enabled(self, enabled: bool) -> None:
         self.use_high_level_policy = bool(enabled)
         self._next_high_level_time = -math.inf
+        self._stale_cube_ramp_start_time = -math.inf
         if self.use_high_level_policy:
             self._cube_recovery_active = False
         if not self.use_high_level_policy:
@@ -979,7 +984,15 @@ class HighLevelPolicyNode(Node):
     def _stop_for_stale_cube_state(self) -> None:
         self._cube_goal_enter_time = -math.inf
         self._cube_tracking_lost = True
+        ramp_start_cmd = self.cmd.copy()
         self._set_high_level_policy_enabled(False)
+        ramp_s = max(
+            float(self.get_parameter("cube_stale_stop_ramp_s").value), 0.0
+        )
+        if not self._uses_unitree_sport_high_level() and ramp_s > 0.0:
+            self._stale_cube_ramp_start_cmd[:] = ramp_start_cmd
+            self._stale_cube_ramp_start_time = time.monotonic()
+            self.cmd[:] = ramp_start_cmd
         self._publish_command_velocity_marker()
         if self._uses_unitree_sport_high_level():
             self._publish_sport_stop_move()
@@ -1544,10 +1557,19 @@ class HighLevelPolicyNode(Node):
             self._update_cube_recovery_command()
             command_enabled = self._cube_recovery_active
         elif not self.use_high_level_policy:
-            # Manual fallback: keep the low-level locomotion policy enabled and
-            # feed it the latest remote-stick command. Centered sticks publish
-            # a valid zero velocity, so the policy continues balancing.
-            self.cmd[:] = self._joystick_velocity_command()
+            ramp_s = max(
+                float(self.get_parameter("cube_stale_stop_ramp_s").value), 0.0
+            )
+            ramp_elapsed_s = time.monotonic() - self._stale_cube_ramp_start_time
+            if math.isfinite(self._stale_cube_ramp_start_time) and ramp_elapsed_s < ramp_s:
+                remaining = 1.0 - ramp_elapsed_s / ramp_s
+                self.cmd[:] = self._stale_cube_ramp_start_cmd * remaining
+            else:
+                self._stale_cube_ramp_start_time = -math.inf
+                # Manual fallback: keep the low-level locomotion policy enabled
+                # and feed it the latest remote-stick command. Centered sticks
+                # publish a valid zero velocity, so the policy keeps balancing.
+                self.cmd[:] = self._joystick_velocity_command()
             command_enabled = True
 
         self._publish_high_level_command(command_enabled)

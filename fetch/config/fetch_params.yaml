@@ -7,14 +7,14 @@ cube_tracker_node:
     cube_state_topic: /go2_fetch/cube_state
     cube_visible_topic: /go2_fetch/cube_visible
     cube_marker_topic: /go2_fetch/cube_marker
-    debug_image_topic: /go2_fetch/cube_debug_image
-    mask_image_topic: /go2_fetch/cube_mask_image
+    debug_image_topic: /go2_fetch/cube_debug_image/compressed
+    mask_image_topic: /go2_fetch/cube_mask_image/compressed
     pre_yolo_image_topic: /go2_fetch/cube_pre_yolo_image
 
     # --- Detector model ---
     # Open-vocabulary classes are applied to compatible YOLOE .pt models.
     # Exported ONNX/TensorRT models normally have their classes baked in.
-    model_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/yolo/yoloe-26n-seg.engine
+    model_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/yolo/yoloe-26s-seg_box.engine
     conf_threshold: 0.1
     yolo_classes: ["box"]
     inference_width: 640
@@ -69,7 +69,7 @@ cube_tracker_node:
     cube_position_offset_xyz: [0.08, 0.0, 0.0]
 
     # --- Debug visualization ---
-    publish_debug_image: false
+    publish_debug_image: true
     publish_mask_image: false
 
 
@@ -91,20 +91,22 @@ high_level_policy_node:
     joystick_command_scale: [1.0, 1.0, 1.0]
 
     # --- Goal definition and completion condition ---
-    goal_xy: [0.0, 0.0] # same as training
+    goal_xy: [2.0, 0.0] # same as training
     # Included in the trained high-level policy observation.
-    goal_radius: 0.2
+    goal_radius: 0.15
     # Completion requires the cube to remain within this radius for the hold
     # time while the robot base is outside robot_goal_clear_radius.
-    cube_goal_stop_radius: 0.3
-    cube_goal_hold_s: 0.6
-    robot_goal_clear_radius: 0.35
+    cube_goal_stop_radius: 0.15
+    cube_goal_hold_s: 1.0
+    robot_goal_clear_radius: 0.3
 
     # --- Cube-loss recovery rotation ---
-    cube_state_timeout_s: 0.5
+    cube_state_timeout_s: 0.8
+    # Smoothly reduce the locomotion command after cube tracking becomes stale.
+    cube_stale_stop_ramp_s: 1.0
     # Fixed normalized yaw command, limited by max_cmd yaw.
-    cube_recovery_angular_cmd: 0.5
-    cube_recovery_front_angle_deg: 20.0
+    cube_recovery_angular_cmd: 0.7
+    cube_recovery_front_angle_deg: 10.0
     cube_recovery_max_rotation_deg: 360.0
 
     # --- Fake observation modes ---
@@ -161,10 +163,10 @@ high_level_policy_node:
     # Clamp offset-corrected raw readings to match the Isaac Lab observation.
     foot_force_clip_max: 150.0
     # Divisor used to normalize the four LowState foot-force readings.
-    foot_force_scale: 75.0
+    foot_force_scale: 80.0
     num_actions: 12
-    # max_cmd: [0.8, 0.6, 1.0] ###
-    max_cmd: [0.4, 0.4, 0.5] ### max for hihg level
+    max_cmd: [0.6, 0.5, 0.8] ###
+    # max_cmd: [1.0, 0.8, 1.0] ### max for hihg level
 
     # --- Joint-state fields used by the high-level observation ---
     leg_joint2motor_idx: [3, 0, 9, 6, 4, 1, 10, 7, 5, 2, 11, 8]
@@ -192,7 +194,7 @@ low_level_policy_node:
     dof_pos_scale: 1.0
     dof_vel_scale: 0.05
     action_scale: 0.25
-    max_cmd: [0.4, 0.4, 0.5]
+    max_cmd: [1.0, 1.0, 1.0]
     foot_force_offset: [4.0, 1.0, 5.0, 5.0]
     foot_force_clip_max: 150.0
     foot_force_scale: 75.0

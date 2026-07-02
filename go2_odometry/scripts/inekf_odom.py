@@ -206,7 +206,7 @@ class Inekf(Node):
 
     def feet_transformations(self, state_msg):
         def feet_contacts(feet_forces):
-            return [bool(f >= 20) for f in feet_forces]
+            return [bool(f >= 18) for f in feet_forces]
 
         # Get configuration
         q_pin, v_pin, f_pin = Inekf.get_qvf_pinocchio(state_msg)

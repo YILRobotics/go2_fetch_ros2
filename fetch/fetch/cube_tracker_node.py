@@ -25,7 +25,7 @@ from rclpy.clock import Clock, ClockType
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
-from sensor_msgs.msg import CameraInfo, Image
+from sensor_msgs.msg import CameraInfo, CompressedImage, Image
 from std_msgs.msg import Bool
 from visualization_msgs.msg import Marker
 import tf2_ros
@@ -178,8 +178,8 @@ class CubeTrackerNode(Node):
         self._state_pub = self.create_publisher(Odometry, self.cube_state_topic, 10)
         self._visible_pub = self.create_publisher(Bool, self.cube_visible_topic, 10)
         self._marker_pub = self.create_publisher(Marker, self.cube_marker_topic, 10)
-        self._debug_pub = self.create_publisher(Image, self.debug_image_topic, 2)
-        self._mask_pub = self.create_publisher(Image, self.mask_image_topic, 2)
+        self._debug_pub = self.create_publisher(CompressedImage, self.debug_image_topic, 2)
+        self._mask_pub = self.create_publisher(CompressedImage, self.mask_image_topic, 2)
         self._pre_yolo_pub = self.create_publisher(Image, self.pre_yolo_image_topic, 2)
 
         self._tf_buffer = tf2_ros.Buffer(cache_time=Duration(seconds=5.0))
@@ -230,8 +230,8 @@ class CubeTrackerNode(Node):
         self.declare_parameter('cube_state_topic', '/go2_fetch/cube_state')
         self.declare_parameter('cube_visible_topic', '/go2_fetch/cube_visible')
         self.declare_parameter('cube_marker_topic', '/go2_fetch/cube_marker')
-        self.declare_parameter('debug_image_topic', '/go2_fetch/cube_debug_image')
-        self.declare_parameter('mask_image_topic', '/go2_fetch/cube_mask_image')
+        self.declare_parameter('debug_image_topic', '/go2_fetch/cube_debug_image/compressed')
+        self.declare_parameter('mask_image_topic', '/go2_fetch/cube_mask_image/compressed')
         self.declare_parameter('pre_yolo_image_topic', '/go2_fetch/cube_pre_yolo_image')
 
         # Detector model.
@@ -650,10 +650,6 @@ class CubeTrackerNode(Node):
         vel_xy = self._estimate_velocity(pos_xy)
         mark('estimate_velocity')
 
-        if self.publish_debug_image:
-            self._publish_debug(image, result, camera_mask, pos_xy, vel_xy)
-            mark('publish_debug_image_3d')
-
         distance_m = float(np.linalg.norm([point.point.x, point.point.y, point.point.z]))
         mark('finalize')
 
@@ -732,7 +728,17 @@ class CubeTrackerNode(Node):
 
     def _publish_mask(self, mask: np.ndarray, image_msg: Image) -> None:
         mask_u8 = (mask.astype(np.uint8) * 255)
-        self._publish_numpy_image(mask_u8, encoding='mono8', header=image_msg.header, publisher=self._mask_pub)
+        encoded, buffer = cv2.imencode(
+            '.jpg', mask_u8, [cv2.IMWRITE_JPEG_QUALITY, 90]
+        )
+        if not encoded:
+            self.get_logger().warn('Failed to JPEG-encode mask image')
+            return
+        msg = CompressedImage()
+        msg.header = image_msg.header
+        msg.format = 'jpeg'
+        msg.data = buffer.tobytes()
+        self._mask_pub.publish(msg)
 
     def _publish_pre_yolo_image(self, image: np.ndarray, image_msg: Image) -> None:
         self._publish_numpy_image(image, encoding='bgr8', header=image_msg.header, publisher=self._pre_yolo_pub)
@@ -824,10 +830,22 @@ class CubeTrackerNode(Node):
         h, w = image_shape
 
         if result.masks is not None and len(result.masks.data) > idx:
-            raw_mask = result.masks.data[idx].detach().cpu().numpy()
-            if raw_mask.shape != (h, w):
-                raw_mask = cv2.resize(raw_mask, (w, h), interpolation=cv2.INTER_NEAREST)
-            mask = raw_mask > 0.5
+            polygon = None
+            if hasattr(result.masks, 'xy') and len(result.masks.xy) > idx:
+                polygon = np.asarray(result.masks.xy[idx], dtype=np.float32)
+
+            if polygon is not None and polygon.ndim == 2 and polygon.shape[0] >= 3:
+                points = np.rint(polygon).astype(np.int32)
+                points[:, 0] = np.clip(points[:, 0], 0, w - 1)
+                points[:, 1] = np.clip(points[:, 1], 0, h - 1)
+                mask_u8 = np.zeros((h, w), dtype=np.uint8)
+                cv2.fillPoly(mask_u8, [points], 1)
+                mask = mask_u8.astype(bool)
+            else:
+                raw_mask = result.masks.data[idx].detach().cpu().numpy()
+                if raw_mask.shape != (h, w):
+                    raw_mask = cv2.resize(raw_mask, (w, h), interpolation=cv2.INTER_NEAREST)
+                mask = raw_mask > 0.5
         else:
             boxes = result.boxes.xyxy[idx].detach().cpu().numpy().astype(np.int32)
             x1 = int(np.clip(boxes[0], 0, w - 1))
@@ -1177,8 +1195,8 @@ class CubeTrackerNode(Node):
         marker.scale.z = self.cube_dimensions[2]
         marker.color.r = 1.0
         marker.color.g = 1.0
-        marker.color.b = 0.0
-        marker.color.a = 0.6
+        marker.color.b = 0.2
+        marker.color.a = 0.75
         self._marker_pub.publish(marker)
         self._last_marker_frame_id = det.frame_id
 
@@ -1200,8 +1218,6 @@ class CubeTrackerNode(Node):
         image,
         result,
         mask: np.ndarray,
-        pos_xy: Optional[Tuple[float, float]] = None,
-        vel_xy: Optional[Tuple[float, float]] = None,
     ) -> None:
         draw = result.plot()
         if draw.shape[:2] != image.shape[:2]:
@@ -1209,10 +1225,7 @@ class CubeTrackerNode(Node):
         overlay = np.zeros_like(draw)
         overlay[mask] = (0, 255, 0)
         draw = cv2.addWeighted(draw, 1.0, overlay, 0.2, 0.0)
-        if pos_xy is not None and vel_xy is not None:
-            line = f'xy=({pos_xy[0]:.2f}, {pos_xy[1]:.2f}) vel=({vel_xy[0]:.2f}, {vel_xy[1]:.2f})'
-        else:
-            line = '2D detection only (no valid depth centroid)'
+        line = 'YOLO detection'
         cv2.putText(
             draw,
             line,
@@ -1223,9 +1236,19 @@ class CubeTrackerNode(Node):
             2,
             cv2.LINE_AA,
         )
-        debug_msg = Image()
+        encoded, buffer = cv2.imencode(
+            '.jpg',
+            np.ascontiguousarray(draw, dtype=np.uint8),
+            [cv2.IMWRITE_JPEG_QUALITY, 90],
+        )
+        if not encoded:
+            self.get_logger().warn('Failed to JPEG-encode debug image')
+            return
+        debug_msg = CompressedImage()
         debug_msg.header.stamp = self.get_clock().now().to_msg()
-        self._publish_numpy_image(draw, encoding='bgr8', header=debug_msg.header, publisher=self._debug_pub)
+        debug_msg.format = 'jpeg'
+        debug_msg.data = buffer.tobytes()
+        self._debug_pub.publish(debug_msg)
 
     def _update_visibility_from_timeout(self, now_s: float) -> None:
         visible = False
