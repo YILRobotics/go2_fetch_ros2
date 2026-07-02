@@ -19,6 +19,12 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     params_file = LaunchConfiguration('params_file')
+    control_mode_arg = DeclareLaunchArgument(
+        'control_mode',
+        default_value='hierarchical_lowcmd',
+        description='hierarchical_lowcmd or unitree_sport_high_level',
+    )
+    control_mode = LaunchConfiguration('control_mode')
 
     cube_tracker = Node(
         package='fetch',
@@ -28,12 +34,20 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[params_file],
     )
 
-    policy = Node(
+    high_level_policy = Node(
         package='fetch',
-        executable='policy_node',
-        name='policy_node',
+        executable='high_level_policy_node',
+        name='high_level_policy_node',
         output='screen',
-        parameters=[params_file],
+        parameters=[params_file, {'control_mode': control_mode}],
+    )
+
+    low_level_policy = Node(
+        package='fetch_low_level',
+        executable='low_level_policy_node',
+        name='low_level_policy_node',
+        output='screen',
+        parameters=[params_file, {'control_mode': control_mode}],
     )
 
     state_machine = Node(
@@ -46,7 +60,9 @@ def generate_launch_description() -> LaunchDescription:
 
     return LaunchDescription([
         params_file_arg,
+        control_mode_arg,
         cube_tracker,
-        policy,
+        low_level_policy,
+        high_level_policy,
         state_machine,
     ])

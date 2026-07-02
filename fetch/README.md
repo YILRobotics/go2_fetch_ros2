@@ -1,10 +1,11 @@
 # fetch
 
-ROS 2 Humble package with three nodes for Go2 push-cube deployment:
+ROS 2 Humble package for Go2 push-cube deployment:
 
 1. `cube_tracker_node`: RealSense + reduced-resolution YOLOE segmentation + aligned-depth filtering, publishes cube planar state.
-2. `policy_node`: ROS 2 port of `Deploy_SimToReal_RL_Go2/deploy_real`, using Unitree ROS 2 topics and Kalman odometry input.
-3. `state_machine_node`: Controls modes (`standup -> policy -> search`) and handles cube-loss recovery.
+2. `low_level_policy_node` (package `fetch_low_level`): C++ startup state machine, low-level TensorRT inference, and `/lowcmd` output.
+3. `high_level_policy_node`: Python high-level TensorRT policy, goal/cube recovery, Sport mode, and visualization.
+4. `state_machine_node`: Controls task-level modes.
 
 ## Architecture
 
@@ -22,16 +23,19 @@ ROS 2 Humble package with three nodes for Go2 push-cube deployment:
     - `/go2_fetch/cube_debug_image` (`sensor_msgs/Image`, optional)
   - Processing timer: 15 Hz (configurable)
 
-- `policy_node`
+- `low_level_policy_node`
+  - Subscribes to `/lowstate`, `/go2_fetch/high_level_cmd`, and `/go2_fetch/high_level_cmd_enabled`.
+  - Owns START/A/SELECT, low-level inference, torque limiting, CRC, `/lowcmd`, `/inekf_lowstate`, control state, and timing.
+
+- `high_level_policy_node`
   - Subscribes:
     - `/odometry/filtered` (`nav_msgs/Odometry`) for Kalman linear velocity
-    - `/lf/lowstate` (`unitree_go/msg/LowState`)
+    - `/lowstate` (`unitree_go/msg/LowState`)
     - `/sportmodestate` (`unitree_go/msg/SportModeState`)
-  - Loads the original `policy_rough.pt` TorchScript policy.
-  - Preserves the remote sequence: START to stand, A to run, SELECT to lower the robot.
+  - Loads the high-level TensorRT policy and handles X/Y/B command-source controls.
   - Publishes:
-    - `/lowcmd` (`unitree_go/msg/LowCmd`)
-    - `/inekf_lowstate` (`unitree_go/msg/LowState`) for the estimator
+    - `/go2_fetch/high_level_cmd` (`geometry_msgs/msg/TwistStamped`)
+    - `/go2_fetch/high_level_cmd_enabled` (`std_msgs/msg/Bool`)
 
 - `state_machine_node`
   - Subscribes:
@@ -54,35 +58,26 @@ All main parameters are in:
 
 Important fields:
 
-- model paths (`high_level_policy_path`, `low_level_policy_path`)
+- model paths in their respective node sections
 - control mode (`control_mode`):
   - `hierarchical_lowcmd`: current full stack, publishes `/lowcmd`
   - `unitree_sport_high_level`: only runs the high-level policy and sends Unitree Sport `Move` requests on `/api/sport/request`
-- Unitree ROS 2 topics (`lowstate_topic`, `lowcmd_topic`, `sportstate_topic`)
+- Unitree ROS 2 topics (`lowstate_topic`, `lowcmd_topic`, `sport_request_topic`)
 - safe policy test mode (`fake_observations_mode`, `send_commands`)
 - runtime velocity-command source (`use_high_level_policy`)
-- startup controls (`wait_for_start_button`, `wait_for_a_button`)
+- low-level startup and safety controls in the `low_level_policy_node` section
 - tracker thresholds (confidence, depth range, outlier filtering)
 - FSM timeouts (`cube_lost_timeout_s`, `cube_reacquire_hold_s`)
 
 ## Policy Model Files
 
-`policy_node.py` currently loads policy files with `torch.jit.load`, so the
-high-level and low-level policy paths must point to TorchScript `.pt` files.
-
-TensorRT `.engine` files cannot be loaded by `torch.jit.load`. To use
-`policy.engine`, the node needs a TensorRT runtime wrapper that loads the engine,
-allocates CUDA buffers, runs inference, and returns the same outputs:
-
-- high-level policy: `[1, 48] -> [1, 3]`
-- low-level policy: `[1, 45] -> [1, 12]`
-
-Use `.pt` files unless TensorRT support has been added to `policy_node.py`.
+`high_level_policy_node.py` loads the high-level TensorRT `.engine`. The C++
+`low_level_policy_node` independently loads the low-level TensorRT `.engine`.
 
 ## PushCube-4L Policy Interface
 
-The current `policy_node.py` implements the hierarchical `Unitree-Go2-PushCube-4L`
-policy stack from:
+The two policy nodes implement the hierarchical `Unitree-Go2-PushCube-4L`
+stack from:
 
 ```text
 /home/ferdinand/fetchrobot/ferdinand/go2_fetch_rl

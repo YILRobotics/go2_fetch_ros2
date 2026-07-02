@@ -22,6 +22,7 @@
   <depend>tf2_geometry_msgs</depend>
   <depend>message_filters</depend>
   <depend>std_srvs</depend>
+  <depend>fetch_interfaces</depend>
 
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-opencv</exec_depend>
