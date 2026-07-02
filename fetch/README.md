@@ -25,11 +25,11 @@ ROS 2 Humble package for Go2 push-cube deployment:
 
 - `low_level_policy_node`
   - Subscribes to `/lowstate`, `/go2_fetch/high_level_cmd`, and `/go2_fetch/high_level_cmd_enabled`.
-  - Owns START/A/SELECT, low-level inference, torque limiting, CRC, `/lowcmd`, `/inekf_lowstate`, control state, and timing.
+  - Owns START/A/SELECT, low-level inference, torque limiting, CRC, `/lowcmd`, `/go2_odometry/inekf_lowstate`, control state, and timing.
 
 - `high_level_policy_node`
   - Subscribes:
-    - `/odometry/filtered` (`nav_msgs/Odometry`) for Kalman linear velocity
+    - `/go2_odometry/filtered` (`nav_msgs/Odometry`) for Kalman linear velocity
     - `/lowstate` (`unitree_go/msg/LowState`)
     - `/sportmodestate` (`unitree_go/msg/SportModeState`)
   - Loads the high-level TensorRT policy and handles X/Y/B command-source controls.
@@ -395,4 +395,4 @@ skips DDS and TF setup, and disables robot command output.
 
 - `ultralytics`, `torch`, `opencv`, and `cv_bridge` are required for tracker/policy inference.
 - The Unitree SDK Python package is required only for separate mode-switching tools, not inside `policy_node`.
-- `unitree_go` ROS messages are required for `/lowcmd`, `/lf/lowstate`, `/sportmodestate`, and `/inekf_lowstate`.
+- `unitree_go` ROS messages are required for `/lowcmd`, `/lf/lowstate`, `/sportmodestate`, and `/go2_odometry/inekf_lowstate`.

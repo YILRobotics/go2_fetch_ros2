@@ -71,7 +71,7 @@ class Inekf(Node):
         self.lowstate_subscription = self.create_subscription(
             LowState, "/lowstate", self.listener_callback, QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, depth=10)
         )
-        self.odom_publisher = self.create_publisher(Odometry, "/odometry/filtered", 1)
+        self.odom_publisher = self.create_publisher(Odometry, "/go2_odometry/filtered", 1)
         self.tf_broadcaster = TransformBroadcaster(self)
 
         # Invariant EKF

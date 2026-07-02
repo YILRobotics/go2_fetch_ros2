@@ -64,7 +64,7 @@ This Kalman listen to:
 
 It then publishes on:
 * `/tf`: The floating base pose estimation
-* `/odometry/filtered`: The same pose estimate with covariances.
+* `/go2_odometry/filtered`: The same pose estimate with covariances.
 
 ---
 ### go2_mocap.launch.py
@@ -77,7 +77,7 @@ By default the node launches:
 Node charged of the communication with the Qualisys Motion Capture system.
 
 Published topics:
-* `/odometry/filtered`: position of the robot base
+* `/go2_odometry/filtered`: position of the robot base
 * `/tf` : Transform between *odom_frame* (fixed) and *base_frame* (tied to the robot)
 
 Ros parameters :
@@ -97,7 +97,7 @@ Ros parameters :
 >What changes is:
 >- **go2_state_publisher.launch.py** is not launched
 >- **go2_odometry/mocap_base_pose.py** is launched but :
->    1. The topic `/odometry/filtered` is not published anymore
+>    1. The topic `/go2_odometry/filtered` is not published anymore
 >    2. The tf now publishes a transform between `odom` and **`base_mocap`** (originally between `odom` and `base`)
 
 ---
@@ -111,7 +111,7 @@ Starts the following:
 Fake odometry node.
 
 Published topics:
-* `/odometry/filtered`: position of the robot base
+* `/go2_odometry/filtered`: position of the robot base
 * `/tf` : Transform between *odom_frame* (fixed) and *base_frame* (tied to the robot)
 
 Takes several ros parameters :

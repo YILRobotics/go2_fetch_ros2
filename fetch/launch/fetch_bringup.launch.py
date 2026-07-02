@@ -31,6 +31,8 @@ def generate_launch_description() -> LaunchDescription:
         executable='cube_tracker_node',
         name='cube_tracker_node',
         output='screen',
+        respawn=True,
+        respawn_delay=2.0,
         parameters=[params_file],
     )
 

@@ -285,7 +285,7 @@ source /opt/ros/humble/setup.bash         # Make sure it is sourced
 source ~/kalman_filter/install/setup.bash #
 
 ros2 topic list
-ros2 topic echo /odometry/filtered
+ros2 topic echo /go2_odometry/filtered
 ```
 
 You should see 2 terminals like this :
@@ -295,7 +295,7 @@ You should see 2 terminals like this :
 <br>
 </p>
 
-You should see fixed poses at `(x=0, y=0, z=base_height)` and the odometry/filtered streams.
+You should see fixed poses at `(x=0, y=0, z=base_height)` and the `/go2_odometry/filtered` stream.
 
 
 ---
@@ -352,7 +352,7 @@ ros2 topic list
 
  
 > 🔭 The data are collected from the robot through the `/lowstate` topic provided by the Unitree ROS 2 interface.  
-After processing with the Kalman filter, the **pose** and **velocity estimations** are published on the `/odometry/filtered` topic.  
+After processing with the Kalman filter, the **pose** and **velocity estimations** are published on the `/go2_odometry/filtered` topic.
 Additionally, the `/robot_description` topic provides the pose and orientation of each part of the robot, allowing real-time visualization of the Go2 model in **RViz2**.
 
 
@@ -395,7 +395,7 @@ source /opt/ros/humble/setup.bash         # Make sure it is sourced
 source ~/kalman_filter/install/setup.bash #
 
 ros2 topic list
-ros2 topic echo /odometry/filtered
+ros2 topic echo /go2_odometry/filtered
 ```
 ---
 ## 🧯 Troubleshooting & common pitfalls

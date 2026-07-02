@@ -283,6 +283,9 @@ class HighLevelPolicyNode(Node):
         self.declare_parameter("high_level_toggle_button", "X")
         self.declare_parameter("goal_set_button", "Y")
         self.declare_parameter("cube_recovery_toggle_button", "B")
+        # Unitree remote axes -> [forward, lateral, yaw]. Axis signs preserve
+        # the mapping used by the original combined policy node.
+        self.declare_parameter("joystick_command_scale", [1.0, 1.0, 1.0])
 
         # Goal definition and completion condition.
         self.declare_parameter("goal_xy", [0.0, 0.0])
@@ -309,7 +312,7 @@ class HighLevelPolicyNode(Node):
         self.declare_parameter("fake_cube_publish_period_s", 0.05)
 
         # ROS topics and coordinate frames.
-        self.declare_parameter("kalman_odom_topic", "/odometry/filtered")
+        self.declare_parameter("kalman_odom_topic", "/go2_odometry/filtered")
         self.declare_parameter("cube_state_topic", "/go2_fetch/cube_state")
         self.declare_parameter("lowstate_topic", "/lowstate")
         self.declare_parameter("sport_request_topic", "/api/sport/request")
@@ -1224,6 +1227,27 @@ class HighLevelPolicyNode(Node):
             )
         self._last_high_level_toggle_pressed = pressed
 
+    def _joystick_velocity_command(self) -> np.ndarray:
+        """Convert the Unitree remote sticks to the low-level velocity command."""
+        command = np.array(
+            [
+                self.remote_controller.ly,
+                -self.remote_controller.lx,
+                -self.remote_controller.rx,
+            ],
+            dtype=np.float32,
+        )
+        scale = np.asarray(
+            self.get_parameter("joystick_command_scale").value,
+            dtype=np.float32,
+        )
+        if scale.size != 3:
+            raise ValueError(
+                "joystick_command_scale must contain [forward, lateral, yaw]"
+            )
+        command *= scale
+        return np.clip(command, -self.config.max_cmd, self.config.max_cmd)
+
     def _update_goal_from_remote(self) -> None:
         button_name = str(self.get_parameter("goal_set_button").value)
         button_index = self._remote_button_index(button_name)
@@ -1520,7 +1544,11 @@ class HighLevelPolicyNode(Node):
             self._update_cube_recovery_command()
             command_enabled = self._cube_recovery_active
         elif not self.use_high_level_policy:
-            self.cmd[:] = 0.0
+            # Manual fallback: keep the low-level locomotion policy enabled and
+            # feed it the latest remote-stick command. Centered sticks publish
+            # a valid zero velocity, so the policy continues balancing.
+            self.cmd[:] = self._joystick_velocity_command()
+            command_enabled = True
 
         self._publish_high_level_command(command_enabled)
         self._publish_velocity_markers_if_due()

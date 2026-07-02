@@ -33,7 +33,7 @@ class DumbOdom(Node):
         self.foot_frame_name = [prefix + "_foot" for prefix in ["FL", "FR", "RL", "RR"]]
         self.foot_frame_id = [self.robot.model.getFrameId(frame_name) for frame_name in self.foot_frame_name]
 
-        self.odom_publisher = self.create_publisher(Odometry, "/odometry/filtered", qos_profile_keeplast)
+        self.odom_publisher = self.create_publisher(Odometry, "/go2_odometry/filtered", qos_profile_keeplast)
         self.tf_broadcaster = TransformBroadcaster(self)
         self.transform_msg = TransformStamped()
         self.odom_msg = Odometry()

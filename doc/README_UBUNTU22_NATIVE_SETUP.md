@@ -566,7 +566,7 @@ Verify outputs:
 
 ```bash
 ros2 topic list | grep -E 'camera|go2_fetch|odometry|lowstate'
-ros2 topic echo /odometry/filtered --once
+ros2 topic echo /go2_odometry/filtered --once
 ros2 topic echo /go2_fetch/cube_state --once
 ```
 

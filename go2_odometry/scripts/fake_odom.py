@@ -17,7 +17,7 @@ class FakeOdometryNode(Node):
         self.declare_parameter("odom_frame", "odom")
 
         self.tf_broadcaster = TransformBroadcaster(self)
-        self.odometry_publisher = self.create_publisher(Odometry, "odometry/filtered", 10)
+        self.odometry_publisher = self.create_publisher(Odometry, "/go2_odometry/filtered", 10)
 
         self.timer = self.create_timer(0.01, self.publish_odom_cb)
 

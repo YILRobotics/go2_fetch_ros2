@@ -302,7 +302,7 @@ class LowLevelPolicyNode final : public rclcpp::Node
     declare_parameter("low_level_policy_path", "");
     declare_parameter("lowcmd_topic", "/lowcmd");
     declare_parameter("lowstate_topic", "/lowstate");
-    declare_parameter("inekf_lowstate_topic", "/inekf_lowstate");
+    declare_parameter("inekf_lowstate_topic", "/go2_odometry/inekf_lowstate");
     declare_parameter("control_rate_hz", 50.0);
     declare_parameter("command_timeout_s", 0.25);
     declare_parameter("expected_inference_ms", 20.0);

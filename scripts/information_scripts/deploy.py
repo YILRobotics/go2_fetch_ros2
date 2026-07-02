@@ -109,7 +109,7 @@ class Controller():
 
 
 
-        ### ROS2 communication with Kalman filter which publishes on "/odometry/filtered" ###
+        ### ROS2 communication with Kalman filter which publishes on "/go2_odometry/filtered" ###
         from rclpy.executors import MultiThreadedExecutor                                   #
         import threading                                                                    #
                                                                                             #

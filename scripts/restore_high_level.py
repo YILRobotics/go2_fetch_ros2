@@ -8,6 +8,8 @@ import sys
 import time
 from pathlib import Path
 
+### THIS SCRIPT DOESNT WORK, IT IS NOT POSSIBLE TO RESTORE HIGH LEVEL MODE AFTER SWITCHING TO LOW LEVEL MODE.
+
 
 def _add_unitree_sdk_path() -> None:
     workspace_sdk = Path(__file__).resolve().parents[3] / "unitree_sdk2_python"

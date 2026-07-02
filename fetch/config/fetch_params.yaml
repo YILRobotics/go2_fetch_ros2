@@ -28,6 +28,9 @@ cube_tracker_node:
     pipeline_log_rate_hz: 2.0
     enable_timing_log: true
     timing_log_rate_hz: 5.0
+    # Exit after a stuck native/TensorRT inference so launch can restart the process.
+    inference_timeout_s: 5.0
+    input_stall_warn_s: 2.0
 
     # --- Image and mask preprocessing ---
     enable_hsv_pre_mask: false
@@ -59,6 +62,9 @@ cube_tracker_node:
     # --- Coordinate frame and cube geometry ---
     target_frame: base
     tf_timeout_s: 0.05
+    camera_info_max_age_s: 5.0
+    camera_info_stamp_tolerance_s: 1.0
+    camera_info_aspect_tolerance: 0.02
     cube_dimensions: [0.16, 0.16, 0.16]
     cube_position_offset_xyz: [0.08, 0.0, 0.0]
 
@@ -81,6 +87,8 @@ high_level_policy_node:
     high_level_toggle_button: "X"
     goal_set_button: "Y"
     cube_recovery_toggle_button: "B"
+    # Remote mapping is [forward (LY), lateral (-LX), yaw (-RX)].
+    joystick_command_scale: [1.0, 1.0, 1.0]
 
     # --- Goal definition and completion condition ---
     goal_xy: [0.0, 0.0] # same as training
@@ -111,7 +119,7 @@ high_level_policy_node:
     fake_cube_publish_period_s: 0.05
 
     # --- ROS topics and coordinate frames ---
-    kalman_odom_topic: /odometry/filtered
+    kalman_odom_topic: /go2_odometry/filtered
     cube_state_topic: /go2_fetch/cube_state
     lowstate_topic: /lowstate
     sport_request_topic: /api/sport/request
@@ -174,7 +182,7 @@ low_level_policy_node:
     low_level_policy_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/unitree_go2_velocity_4l/2026-06-30_11-11-40_walk_ff_5/policy.engine
     lowcmd_topic: /lowcmd
     lowstate_topic: /lowstate
-    inekf_lowstate_topic: /inekf_lowstate
+    inekf_lowstate_topic: /go2_odometry/inekf_lowstate
     control_rate_hz: 50.0
     command_timeout_s: 0.25
     expected_inference_ms: 20.0

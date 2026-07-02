@@ -21,6 +21,7 @@ from cv_bridge import CvBridge
 from geometry_msgs.msg import PointStamped
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from nav_msgs.msg import Odometry
+from rclpy.clock import Clock, ClockType
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
@@ -47,6 +48,13 @@ class DetectionResult:
     velocity_xy: Tuple[float, float]
     frame_id: str
     distance_m: float
+
+
+@dataclass
+class WorkerResult:
+    detection: Optional[DetectionResult]
+    stamp: Tuple[int, int]
+    error: Optional[str] = None
 
 
 class CubeTrackerNode(Node):
@@ -91,6 +99,8 @@ class CubeTrackerNode(Node):
         if len(self.cube_dimensions) != 3 or any(v <= 0.0 for v in self.cube_dimensions):
             raise ValueError('cube_dimensions must contain three positive values [x, y, z]')
         self.processing_rate_hz = float(self.get_parameter('processing_rate_hz').value)
+        if self.processing_rate_hz <= 0.0:
+            raise ValueError('processing_rate_hz must be positive')
         self.status_log_rate_hz = float(self.get_parameter('status_log_rate_hz').value)
         self.pipeline_log_rate_hz = float(self.get_parameter('pipeline_log_rate_hz').value)
         self.enable_timing_log = bool(self.get_parameter('enable_timing_log').value)
@@ -106,36 +116,64 @@ class CubeTrackerNode(Node):
         self.publish_mask_image = bool(self.get_parameter('publish_mask_image').value)
         self.cube_position_offset_xyz = tuple(float(v) for v in self.get_parameter('cube_position_offset_xyz').value)
         self.tf_timeout_s = float(self.get_parameter('tf_timeout_s').value)
+        self.camera_info_max_age_s = float(self.get_parameter('camera_info_max_age_s').value)
+        self.camera_info_stamp_tolerance_s = float(
+            self.get_parameter('camera_info_stamp_tolerance_s').value
+        )
+        self.camera_info_aspect_tolerance = float(
+            self.get_parameter('camera_info_aspect_tolerance').value
+        )
+        self.inference_timeout_s = float(self.get_parameter('inference_timeout_s').value)
+        self.input_stall_warn_s = float(self.get_parameter('input_stall_warn_s').value)
         self.mask_erode_iterations = int(self.get_parameter('mask_erode_iterations').value)
         self.mask_erode_kernel_size = int(self.get_parameter('mask_erode_kernel_size').value)
         self.central_mask_keep_ratio = float(self.get_parameter('central_mask_keep_ratio').value)
         self.max_pose_jump_m = float(self.get_parameter('max_pose_jump_m').value)
         self.max_pose_speed_mps = float(self.get_parameter('max_pose_speed_mps').value)
 
-        self.mask_erode_iterations = int(self.get_parameter('mask_erode_iterations').value)
         self._rng = np.random.default_rng(seed=1234)
         self._bridge = CvBridge()
         self._history: deque[Tuple[float, float, float]] = deque()
 
         self._latest_pair: Optional[Tuple[Image, Image]] = None
         self._camera_info: Optional[CameraInfo] = None
+        self._camera_info_received_wall_s: Optional[float] = None
         self._latest_lock = threading.Lock()
         self._last_processed_stamp: Optional[Tuple[int, int]] = None
+        self._last_submitted_stamp: Optional[Tuple[int, int]] = None
+        self._last_sync_wall_s: Optional[float] = None
+        self._last_sync_stamp: Optional[Tuple[int, int]] = None
+        self._last_sync_stamp_change_wall_s: Optional[float] = None
         self._last_detection_time: Optional[float] = None
         self._last_visible = False
         self._last_marker_frame_id = ''
         self._filtered_cube_position: Optional[np.ndarray] = None
         self._last_filter_time_s: Optional[float] = None
-        self._processing = False
+        self._worker_condition = threading.Condition()
+        self._worker_pending: Optional[Tuple[Image, Image, Tuple[int, int]]] = None
+        self._worker_result: Optional[WorkerResult] = None
+        self._worker_stop = False
+        self._inference_started_wall_s: Optional[float] = None
+        self._inference_count = 0
+        self._last_inference_duration_s: Optional[float] = None
         self._last_status_log_time = 0.0
         self._last_yolo_log_time = 0.0
         self._last_pipeline_log_time = 0.0
         self._last_timing_log_time = 0.0
+        self._last_health_log_wall_s = 0.0
+        self._watchdog_fired = False
         self._last_centroid_reject_reason = ''
         self._last_process_wall_time: Optional[float] = None
         self._current_processing_hz = 0.0
 
         self._model = self._load_model()
+
+        self._worker_thread = threading.Thread(
+            target=self._worker_loop,
+            name='cube-tracker-inference',
+            daemon=True,
+        )
+        self._worker_thread.start()
 
         self._state_pub = self.create_publisher(Odometry, self.cube_state_topic, 10)
         self._visible_pub = self.create_publisher(Bool, self.cube_visible_topic, 10)
@@ -170,7 +208,13 @@ class CubeTrackerNode(Node):
         )
         self._sync.registerCallback(self._sync_cb)
 
-        self._timer = self.create_timer(1.0 / self.processing_rate_hz, self._on_timer)
+        # A steady clock keeps health checks and the inference watchdog alive even
+        # if ROS/simulation time pauses.
+        self._timer = self.create_timer(
+            1.0 / self.processing_rate_hz,
+            self._on_timer,
+            clock=Clock(clock_type=ClockType.STEADY_TIME),
+        )
 
         self.get_logger().info(
             f'Cube tracker ready. model={self.model_path} image={self.image_topic} '
@@ -204,6 +248,8 @@ class CubeTrackerNode(Node):
         self.declare_parameter('pipeline_log_rate_hz', 5.0)
         self.declare_parameter('enable_timing_log', True)
         self.declare_parameter('timing_log_rate_hz', 5.0)
+        self.declare_parameter('inference_timeout_s', 5.0)
+        self.declare_parameter('input_stall_warn_s', 2.0)
 
         # Image and mask preprocessing.
         self.declare_parameter('enable_hsv_pre_mask', False)
@@ -233,6 +279,9 @@ class CubeTrackerNode(Node):
         # Coordinate frame and cube geometry.
         self.declare_parameter('target_frame', 'base_link')
         self.declare_parameter('tf_timeout_s', 0.05)
+        self.declare_parameter('camera_info_max_age_s', 5.0)
+        self.declare_parameter('camera_info_stamp_tolerance_s', 1.0)
+        self.declare_parameter('camera_info_aspect_tolerance', 0.02)
         self.declare_parameter('cube_dimensions', [0.16, 0.16, 0.16])
         self.declare_parameter('cube_position_offset_xyz', [0.0, 0.0, 0.0])
 
@@ -297,29 +346,37 @@ class CubeTrackerNode(Node):
 
     def _camera_info_cb(self, camera_info_msg: CameraInfo) -> None:
         self._camera_info = camera_info_msg
+        self._camera_info_received_wall_s = time.monotonic()
 
     def _sync_cb(self, image_msg: Image, depth_msg: Image) -> None:
+        now_wall_s = time.monotonic()
+        stamp = (image_msg.header.stamp.sec, image_msg.header.stamp.nanosec)
         with self._latest_lock:
             self._latest_pair = (image_msg, depth_msg)
+            self._last_sync_wall_s = now_wall_s
+            if stamp != self._last_sync_stamp:
+                self._last_sync_stamp = stamp
+                self._last_sync_stamp_change_wall_s = now_wall_s
 
     def _on_timer(self) -> None:
-        if self._processing:
-            return
+        self._consume_worker_result()
+
+        now_s = self.get_clock().now().nanoseconds * 1e-9
+        now_wall_s = time.monotonic()
+        self._update_visibility_from_timeout(now_s)
+        self._check_inference_watchdog(now_wall_s)
+        self._log_health(now_wall_s)
 
         pair: Optional[Tuple[Image, Image]] = None
         with self._latest_lock:
             if self._latest_pair is not None:
                 pair = self._latest_pair
 
-        now_s = self.get_clock().now().nanoseconds * 1e-9
-
         if pair is None:
-            self._update_visibility_from_timeout(now_s)
             return
 
         stamp = (pair[0].header.stamp.sec, pair[0].header.stamp.nanosec)
-        if stamp == self._last_processed_stamp:
-            self._update_visibility_from_timeout(now_s)
+        if stamp == self._last_submitted_stamp:
             return
         now_wall = time.perf_counter()
         if self._last_process_wall_time is not None:
@@ -328,19 +385,128 @@ class CubeTrackerNode(Node):
                 self._current_processing_hz = 1.0 / dt
         self._last_process_wall_time = now_wall
 
-        self._processing = True
-        try:
-            det = self._process_pair(pair[0], pair[1])
-            self._last_processed_stamp = stamp
-            if det is not None:
-                self._last_detection_time = now_s
-                self._publish_detection(det, stamp)
-            self._update_visibility_from_timeout(now_s)
-            self._log_status(now_s, det)
-        except Exception as exc:
-            self.get_logger().error(f'Cube tracker callback failed: {exc}\n{traceback.format_exc()}')
-        finally:
-            self._processing = False
+        with self._worker_condition:
+            if self._worker_pending is not None or self._inference_started_wall_s is not None:
+                return
+            self._last_submitted_stamp = stamp
+            self._worker_pending = (pair[0], pair[1], stamp)
+            self._worker_condition.notify()
+
+    def _worker_loop(self) -> None:
+        while True:
+            with self._worker_condition:
+                self._worker_condition.wait_for(
+                    lambda: self._worker_pending is not None or self._worker_stop
+                )
+                if self._worker_stop:
+                    return
+                image_msg, depth_msg, stamp = self._worker_pending
+                self._worker_pending = None
+                self._inference_started_wall_s = time.monotonic()
+
+            self.get_logger().info(
+                f'inference start: frame={stamp[0]}.{stamp[1]:09d} count={self._inference_count + 1}'
+            )
+            error = None
+            detection = None
+            try:
+                detection = self._process_pair(image_msg, depth_msg)
+            except Exception as exc:
+                error = f'{exc}\n{traceback.format_exc()}'
+
+            finished_wall_s = time.monotonic()
+            with self._worker_condition:
+                started_wall_s = self._inference_started_wall_s
+                self._inference_started_wall_s = None
+                self._inference_count += 1
+                if started_wall_s is not None:
+                    self._last_inference_duration_s = finished_wall_s - started_wall_s
+                self._worker_result = WorkerResult(detection, stamp, error)
+
+            self.get_logger().info(
+                f'inference end: frame={stamp[0]}.{stamp[1]:09d} '
+                f'duration={self._last_inference_duration_s or 0.0:.3f}s'
+            )
+
+    def _consume_worker_result(self) -> None:
+        with self._worker_condition:
+            result = self._worker_result
+            self._worker_result = None
+        if result is None:
+            return
+
+        self._last_processed_stamp = result.stamp
+        if result.error is not None:
+            self.get_logger().error(f'Cube tracker worker failed: {result.error}')
+        now_s = self.get_clock().now().nanoseconds * 1e-9
+        if result.detection is not None:
+            self._last_detection_time = now_s
+            self._publish_detection(result.detection, result.stamp)
+        self._update_visibility_from_timeout(now_s)
+        self._log_status(now_s, result.detection)
+
+    def _check_inference_watchdog(self, now_wall_s: float) -> None:
+        with self._worker_condition:
+            started_wall_s = self._inference_started_wall_s
+        if (
+            self.inference_timeout_s <= 0.0
+            or started_wall_s is None
+            or self._watchdog_fired
+        ):
+            return
+        elapsed_s = now_wall_s - started_wall_s
+        if elapsed_s <= self.inference_timeout_s:
+            return
+        self._watchdog_fired = True
+        self.get_logger().fatal(
+            f'Inference stalled for {elapsed_s:.2f}s (limit={self.inference_timeout_s:.2f}s); '
+            'exiting so the launch supervisor can restart the node.'
+        )
+        os._exit(70)
+
+    def _log_health(self, now_wall_s: float) -> None:
+        period_s = 1.0 / self.status_log_rate_hz if self.status_log_rate_hz > 0.0 else 1.0
+        if now_wall_s - self._last_health_log_wall_s < period_s:
+            return
+        self._last_health_log_wall_s = now_wall_s
+        with self._latest_lock:
+            sync_age = (
+                None if self._last_sync_wall_s is None else now_wall_s - self._last_sync_wall_s
+            )
+            stamp_age = (
+                None
+                if self._last_sync_stamp_change_wall_s is None
+                else now_wall_s - self._last_sync_stamp_change_wall_s
+            )
+        with self._worker_condition:
+            inference_age = (
+                None if self._inference_started_wall_s is None
+                else now_wall_s - self._inference_started_wall_s
+            )
+        if sync_age is None or (
+            self.input_stall_warn_s > 0.0 and sync_age > self.input_stall_warn_s
+        ):
+            age_text = 'never' if sync_age is None else f'{sync_age:.2f}s'
+            self.get_logger().warn(f'health: no recent synchronized color/depth pair; age={age_text}')
+        elif self.input_stall_warn_s > 0.0 and (
+            stamp_age is None or stamp_age > self.input_stall_warn_s
+        ):
+            age_text = 'never' if stamp_age is None else f'{stamp_age:.2f}s'
+            self.get_logger().warn(f'health: synchronized frame timestamp is not advancing; age={age_text}')
+        elif inference_age is not None:
+            self.get_logger().info(
+                f'health: executor alive, inference active for {inference_age:.2f}s, '
+                f'completed={self._inference_count}'
+            )
+        else:
+            duration_text = (
+                'n/a' if self._last_inference_duration_s is None
+                else f'{self._last_inference_duration_s:.3f}s'
+            )
+            self.get_logger().info(
+                f'health: executor alive, sync_age={sync_age:.2f}s, '
+                f'last_inference={duration_text}, completed={self._inference_count}'
+            )
 
     def _process_pair(self, image_msg: Image, depth_msg: Image) -> Optional[DetectionResult]:
         if self._model is None:
@@ -460,6 +626,8 @@ class CubeTrackerNode(Node):
                 out_frame = self.target_frame
             except Exception as exc:
                 self.get_logger().warn(f'TF transform failed ({depth_msg.header.frame_id}->{self.target_frame}): {exc}')
+                log_timing('tf_transform_failed')
+                return None
             mark('tf_transform')
 
         now_filter_s = self.get_clock().now().nanoseconds * 1e-9
@@ -757,6 +925,37 @@ class CubeTrackerNode(Node):
             self._last_centroid_reject_reason = 'waiting for aligned-depth camera_info'
             return None
 
+        now_wall_s = time.monotonic()
+        if self._camera_info_received_wall_s is None or (
+            self.camera_info_max_age_s > 0.0
+            and now_wall_s - self._camera_info_received_wall_s > self.camera_info_max_age_s
+        ):
+            self._last_centroid_reject_reason = 'camera_info is stale'
+            return None
+        if (
+            camera_info.header.frame_id
+            and depth_msg.header.frame_id
+            and camera_info.header.frame_id != depth_msg.header.frame_id
+        ):
+            self._last_centroid_reject_reason = (
+                f'camera_info frame {camera_info.header.frame_id} does not match depth frame '
+                f'{depth_msg.header.frame_id}'
+            )
+            return None
+        info_stamp_s = camera_info.header.stamp.sec + camera_info.header.stamp.nanosec * 1e-9
+        depth_stamp_s = depth_msg.header.stamp.sec + depth_msg.header.stamp.nanosec * 1e-9
+        if (
+            self.camera_info_stamp_tolerance_s > 0.0
+            and info_stamp_s > 0.0
+            and depth_stamp_s > 0.0
+            and abs(depth_stamp_s - info_stamp_s) > self.camera_info_stamp_tolerance_s
+        ):
+            self._last_centroid_reject_reason = (
+                f'camera_info timestamp differs from depth by '
+                f'{abs(depth_stamp_s - info_stamp_s):.3f}s'
+            )
+            return None
+
         depth_result = self._depth_array(depth_msg)
         if depth_result is None:
             return None
@@ -804,6 +1003,18 @@ class CubeTrackerNode(Node):
 
         info_width = int(camera_info.width) or width
         info_height = int(camera_info.height) or height
+        if info_width <= 0 or info_height <= 0:
+            self._last_centroid_reject_reason = (
+                f'invalid camera_info dimensions {info_width}x{info_height}'
+            )
+            return None
+        aspect_error = abs((width / height) / (info_width / info_height) - 1.0)
+        if aspect_error > self.camera_info_aspect_tolerance:
+            self._last_centroid_reject_reason = (
+                f'camera_info aspect ratio does not match depth: info={info_width}x{info_height} '
+                f'depth={width}x{height}'
+            )
+            return None
         scale_x = width / info_width
         scale_y = height / info_height
         fx = float(camera_info.k[0]) * scale_x
@@ -960,7 +1171,7 @@ class CubeTrackerNode(Node):
         marker.pose.orientation.x = 0.0
         marker.pose.orientation.y = 0.0
         marker.pose.orientation.z = 0.0
-        marker.pose.orientation.w = 0.0
+        marker.pose.orientation.w = 1.0
         marker.scale.x = self.cube_dimensions[0]
         marker.scale.y = self.cube_dimensions[1]
         marker.scale.z = self.cube_dimensions[2]
@@ -1025,9 +1236,12 @@ class CubeTrackerNode(Node):
         if was_visible and not visible:
             self._delete_cube_marker()
         if not visible:
-            self._history.clear()
-            self._filtered_cube_position = None
-            self._last_filter_time_s = None
+            with self._worker_condition:
+                inference_active = self._inference_started_wall_s is not None
+            if not inference_active:
+                self._history.clear()
+                self._filtered_cube_position = None
+                self._last_filter_time_s = None
 
     def _publish_visible(self, value: bool) -> None:
         self._last_visible = value
@@ -1053,6 +1267,14 @@ class CubeTrackerNode(Node):
             f'vel=({det.velocity_xy[0]:.3f}, {det.velocity_xy[1]:.3f}) '
             f'dist={det.distance_m:.3f} frame={det.frame_id}'
         )
+
+    def destroy_node(self):
+        with self._worker_condition:
+            self._worker_stop = True
+            self._worker_condition.notify_all()
+        if self._worker_thread.is_alive():
+            self._worker_thread.join(timeout=1.0)
+        return super().destroy_node()
 
 
 def main(args=None) -> None:

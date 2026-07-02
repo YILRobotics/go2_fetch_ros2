@@ -396,9 +396,9 @@ rviz2 -d /home/ferdinand/unitree/src/go2_fetch_ros2/fetch/rviz/realsense.rviz
 
 ```bash
 cd rosbags
-ros2 bag record -e "(/go2_fetch/.*|/odometry/filtered|/tf|/camera/depth/color/points|/camera/color/image_raw/compressed|/robot_description|/tf_static|/lf/lowstate)" -x ".*compressedDepth.*"
+ros2 bag record -e "(/go2_fetch/.*|/go2_odometry/filtered|/tf|/camera/depth/color/points|/camera/color/image_raw/compressed|/robot_description|/tf_static|/lf/lowstate)" -x ".*compressedDepth.*"
 
-ros2 bag record -e "(/go2_fetch/.*|/odometry/filtered|/tf|/robot_description|/tf_static|/lf/lowstate)"
+ros2 bag record -e "(/go2_fetch/.*|/go2_odometry/filtered|/tf|/robot_description|/tf_static|/lf/lowstate)"
 ```
 
 Now the cause is clear: rosbag’s default 100 MiB cache fills after about 7.3 seconds—exactly when cube
@@ -408,7 +408,7 @@ Now the cause is clear: rosbag’s default 100 MiB cache fills after about 7.3 s
   Try direct writing with no cache:
 
   ros2 bag record --max-cache-size 0 \
-    -e "(/go2_fetch/.*|/odometry/filtered|/tf|/camera/depth/color/points|/camera/color/image_raw/
+    -e "(/go2_fetch/.*|/go2_odometry/filtered|/tf|/camera/depth/color/points|/camera/color/image_raw/
     compressed|/robot_description|/tf_static|/lf/lowstate)" \
     -x ".*compressedDepth.*"
     
