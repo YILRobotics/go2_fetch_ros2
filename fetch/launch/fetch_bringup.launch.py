@@ -26,10 +26,20 @@ def generate_launch_description() -> LaunchDescription:
     )
     control_mode = LaunchConfiguration('control_mode')
 
-    cube_tracker = Node(
+    cube_tracker_yolo = Node(
         package='fetch',
-        executable='cube_tracker_node',
-        name='cube_tracker_node',
+        executable='cube_tracker_yolo_node',
+        name='cube_tracker_yolo_node',
+        output='screen',
+        respawn=True,
+        respawn_delay=2.0,
+        parameters=[params_file],
+    )
+
+    cube_tracker_pcl = Node(
+        package='fetch_pcl_tracker',
+        executable='cube_tracker_pcl_node',
+        name='cube_tracker_pcl_node',
         output='screen',
         respawn=True,
         respawn_delay=2.0,
@@ -63,7 +73,8 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription([
         params_file_arg,
         control_mode_arg,
-        cube_tracker,
+        cube_tracker_yolo,
+        cube_tracker_pcl,
         low_level_policy,
         high_level_policy,
         state_machine,

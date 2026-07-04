@@ -1,6 +1,6 @@
 #!/home/unitree/miniconda3/envs/env_deploy/bin/python
 
-"""Cube tracker using reduced-resolution YOLO segmentation and aligned depth."""
+"""YOLO cube measurement source using segmentation and aligned depth."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ import cv2
 import numpy as np
 import rclpy
 from cv_bridge import CvBridge
-from geometry_msgs.msg import PointStamped
+from geometry_msgs.msg import PointStamped, PoseWithCovarianceStamped
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from nav_msgs.msg import Odometry
 from rclpy.clock import Clock, ClockType
@@ -58,19 +58,18 @@ class WorkerResult:
 
 
 class CubeTrackerNode(Node):
-    """Detects cube-like object and publishes filtered planar state."""
+    """Detect a cube and publish timestamped 3D position measurements."""
 
     def __init__(self) -> None:
-        super().__init__('cube_tracker_node')
+        super().__init__('cube_tracker_yolo_node')
 
         self._declare_parameters()
 
         self.image_topic = self.get_parameter('image_topic').value
         self.depth_topic = self.get_parameter('depth_topic').value
         self.camera_info_topic = self.get_parameter('camera_info_topic').value
-        self.cube_state_topic = self.get_parameter('cube_state_topic').value
-        self.cube_visible_topic = self.get_parameter('cube_visible_topic').value
-        self.cube_marker_topic = self.get_parameter('cube_marker_topic').value
+        self.measurement_topic = self.get_parameter('measurement_topic').value
+        self.measurement_variance_xy = float(self.get_parameter('measurement_variance_xy').value)
         self.debug_image_topic = self.get_parameter('debug_image_topic').value
         self.mask_image_topic = self.get_parameter('mask_image_topic').value
         self.pre_yolo_image_topic = self.get_parameter('pre_yolo_image_topic').value
@@ -175,9 +174,9 @@ class CubeTrackerNode(Node):
         )
         self._worker_thread.start()
 
-        self._state_pub = self.create_publisher(Odometry, self.cube_state_topic, 10)
-        self._visible_pub = self.create_publisher(Bool, self.cube_visible_topic, 10)
-        self._marker_pub = self.create_publisher(Marker, self.cube_marker_topic, 10)
+        self._measurement_pub = self.create_publisher(
+            PoseWithCovarianceStamped, self.measurement_topic, 10
+        )
         self._debug_pub = self.create_publisher(CompressedImage, self.debug_image_topic, 2)
         self._mask_pub = self.create_publisher(CompressedImage, self.mask_image_topic, 2)
         self._pre_yolo_pub = self.create_publisher(Image, self.pre_yolo_image_topic, 2)
@@ -227,9 +226,8 @@ class CubeTrackerNode(Node):
         self.declare_parameter('depth_topic', '/camera/aligned_depth_to_color/image_raw')
         # Aligned depth uses the color optical geometry.
         self.declare_parameter('camera_info_topic', '/camera/color/camera_info')
-        self.declare_parameter('cube_state_topic', '/go2_fetch/cube_state')
-        self.declare_parameter('cube_visible_topic', '/go2_fetch/cube_visible')
-        self.declare_parameter('cube_marker_topic', '/go2_fetch/cube_marker')
+        self.declare_parameter('measurement_topic', '/go2_fetch/yolo/cube_measurement')
+        self.declare_parameter('measurement_variance_xy', 0.0025)
         self.declare_parameter('debug_image_topic', '/go2_fetch/cube_debug_image/compressed')
         self.declare_parameter('mask_image_topic', '/go2_fetch/cube_mask_image/compressed')
         self.declare_parameter('pre_yolo_image_topic', '/go2_fetch/cube_pre_yolo_image')
@@ -277,7 +275,7 @@ class CubeTrackerNode(Node):
         self.declare_parameter('max_pose_speed_mps', 1.0)
 
         # Coordinate frame and cube geometry.
-        self.declare_parameter('target_frame', 'base_link')
+        self.declare_parameter('target_frame', 'odom')
         self.declare_parameter('tf_timeout_s', 0.05)
         self.declare_parameter('camera_info_max_age_s', 5.0)
         self.declare_parameter('camera_info_stamp_tolerance_s', 1.0)
@@ -298,7 +296,12 @@ class CubeTrackerNode(Node):
         self.model_path = resolved_model_path
         model = YOLO(resolved_model_path)
 
-        if self.yolo_classes:
+        if self.yolo_classes and resolved_model_path.lower().endswith('.engine'):
+            self.get_logger().info(
+                'TensorRT engine classes are baked at export; skipping set_classes '
+                f'(configured classes={self.yolo_classes})'
+            )
+        elif self.yolo_classes:
             try:
                 model.set_classes(self.yolo_classes)
                 self.get_logger().info(f'YOLOE classes set to: {self.yolo_classes}')
@@ -530,12 +533,8 @@ class CubeTrackerNode(Node):
         if image is None:
             log_timing('unsupported_image_encoding')
             return None
-        yolo_input = cv2.resize(
-            image,
-            (self.inference_width, self.inference_height),
-            interpolation=cv2.INTER_LINEAR,
-        )
-        mark('resize_for_yolo')
+        yolo_input = self._resize_for_inference_if_needed(image)
+        mark('resize_for_yolo_if_needed')
         if self.enable_hsv_pre_mask:
             yolo_input, color_mask = self._apply_hsv_green_blue_mask(yolo_input)
             mark('hsv_pre_mask')
@@ -630,32 +629,23 @@ class CubeTrackerNode(Node):
                 return None
             mark('tf_transform')
 
-        now_filter_s = self.get_clock().now().nanoseconds * 1e-9
         raw_pos_array = np.asarray(
             [float(point.point.x), float(point.point.y), float(point.point.z)],
             dtype=np.float64,
         )
 
-        if not self._is_reasonable_pose_jump(raw_pos_array, now_filter_s):
-            self._maybe_log_pipeline('pipeline: rejected unreasonable pose jump')
-            log_timing('pose_jump_rejected')
-            return None
-
         raw_pos_xyz = (float(raw_pos_array[0]), float(raw_pos_array[1]), float(raw_pos_array[2]))
-        filtered_pos_xyz = self._low_pass_cube_position(raw_pos_xyz, now_s=now_filter_s)
         pos_xyz = tuple(
-            float(filtered_pos_xyz[i] + self.cube_position_offset_xyz[i]) for i in range(3)
+            float(raw_pos_xyz[i] + self.cube_position_offset_xyz[i]) for i in range(3)
         )
         pos_xy = pos_xyz[:2]
-        vel_xy = self._estimate_velocity(pos_xy)
-        mark('estimate_velocity')
+        vel_xy = (0.0, 0.0)
 
         distance_m = float(np.linalg.norm([point.point.x, point.point.y, point.point.z]))
         mark('finalize')
 
         self.get_logger().info(
             f'detected: pos=({pos_xy[0]:.2f}, {pos_xy[1]:.2f}) '
-            f'vel=({vel_xy[0]:.2f}, {vel_xy[1]:.2f}) '
             f'dist={distance_m:.2f}m frame={out_frame}'
         )
         log_timing('detected')
@@ -665,6 +655,19 @@ class CubeTrackerNode(Node):
             velocity_xy=vel_xy,
             frame_id=out_frame,
             distance_m=distance_m,
+        )
+
+    def _resize_for_inference_if_needed(self, image: np.ndarray) -> np.ndarray:
+        """Resize only when the camera image differs from the requested size."""
+        if image.shape[:2] == (self.inference_height, self.inference_width):
+            return image
+        scale_down = (
+            self.inference_width < image.shape[1] or self.inference_height < image.shape[0]
+        )
+        return cv2.resize(
+            image,
+            (self.inference_width, self.inference_height),
+            interpolation=cv2.INTER_AREA if scale_down else cv2.INTER_LINEAR,
         )
 
     def _maybe_log_yolo_detections(self, result) -> None:
@@ -1153,64 +1156,23 @@ class CubeTrackerNode(Node):
         return (vx, vy)
 
     def _publish_detection(self, det: DetectionResult, stamp: Tuple[int, int]) -> None:
-        msg = Odometry()
+        msg = PoseWithCovarianceStamped()
         msg.header.stamp.sec = stamp[0]
         msg.header.stamp.nanosec = stamp[1]
         msg.header.frame_id = det.frame_id
-        msg.child_frame_id = 'cube'
-
-        msg.pose.pose.position.x = det.position_xy[0]
-        msg.pose.pose.position.y = det.position_xy[1]
-        msg.pose.pose.position.z = 0.0
-        msg.pose.covariance[0] = 0.01
-        msg.pose.covariance[7] = 0.01
-
-        msg.twist.twist.linear.x = det.velocity_xy[0]
-        msg.twist.twist.linear.y = det.velocity_xy[1]
-        msg.twist.covariance[0] = 0.04
-        msg.twist.covariance[7] = 0.04
-
-        self._state_pub.publish(msg)
-        self._publish_cube_marker(det, stamp)
-        self._publish_visible(True)
+        msg.pose.pose.position.x = det.position_xyz[0]
+        msg.pose.pose.position.y = det.position_xyz[1]
+        msg.pose.pose.position.z = det.position_xyz[2]
+        msg.pose.pose.orientation.w = 1.0
+        msg.pose.covariance[0] = self.measurement_variance_xy
+        msg.pose.covariance[7] = self.measurement_variance_xy
+        msg.pose.covariance[14] = self.measurement_variance_xy * 4.0
+        self._measurement_pub.publish(msg)
 
     def _publish_cube_marker(self, det: DetectionResult, stamp: Tuple[int, int]) -> None:
-        marker = Marker()
-        marker.header.stamp.sec = stamp[0]
-        marker.header.stamp.nanosec = stamp[1]
-        marker.header.frame_id = det.frame_id
-        marker.ns = 'cube_state'
-        marker.id = 0
-        marker.type = Marker.CUBE
-        marker.action = Marker.ADD
-        marker.pose.position.x = det.position_xyz[0]
-        marker.pose.position.y = det.position_xyz[1]
-        marker.pose.position.z = det.position_xyz[2]
-        marker.pose.orientation.x = 0.0
-        marker.pose.orientation.y = 0.0
-        marker.pose.orientation.z = 0.0
-        marker.pose.orientation.w = 1.0
-        marker.scale.x = self.cube_dimensions[0]
-        marker.scale.y = self.cube_dimensions[1]
-        marker.scale.z = self.cube_dimensions[2]
-        marker.color.r = 1.0
-        marker.color.g = 1.0
-        marker.color.b = 0.2
-        marker.color.a = 0.75
-        self._marker_pub.publish(marker)
-        self._last_marker_frame_id = det.frame_id
+        del det, stamp
 
     def _delete_cube_marker(self) -> None:
-        if not self._last_marker_frame_id:
-            return
-
-        marker = Marker()
-        marker.header.stamp = self.get_clock().now().to_msg()
-        marker.header.frame_id = self._last_marker_frame_id
-        marker.ns = 'cube_state'
-        marker.id = 0
-        marker.action = Marker.DELETE
-        self._marker_pub.publish(marker)
         self._last_marker_frame_id = ''
 
     def _publish_debug(
@@ -1268,9 +1230,6 @@ class CubeTrackerNode(Node):
 
     def _publish_visible(self, value: bool) -> None:
         self._last_visible = value
-        msg = Bool()
-        msg.data = value
-        self._visible_pub.publish(msg)
 
     def _log_status(self, now_s: float, det: Optional[DetectionResult]) -> None:
         if self.status_log_rate_hz <= 0.0:

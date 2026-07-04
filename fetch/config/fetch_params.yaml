@@ -1,12 +1,11 @@
-cube_tracker_node:
+cube_tracker_yolo_node:
   ros__parameters:
     # --- Input and output topics ---
     image_topic: /camera/color/image_raw
     depth_topic: /camera/aligned_depth_to_color/image_raw
     camera_info_topic: /camera/color/camera_info
-    cube_state_topic: /go2_fetch/cube_state
-    cube_visible_topic: /go2_fetch/cube_visible
-    cube_marker_topic: /go2_fetch/cube_marker
+    measurement_topic: /go2_fetch/yolo/cube_measurement
+    measurement_variance_xy: 0.0025
     debug_image_topic: /go2_fetch/cube_debug_image/compressed
     mask_image_topic: /go2_fetch/cube_mask_image/compressed
     pre_yolo_image_topic: /go2_fetch/cube_pre_yolo_image
@@ -14,7 +13,7 @@ cube_tracker_node:
     # --- Detector model ---
     # Open-vocabulary classes are applied to compatible YOLOE .pt models.
     # Exported ONNX/TensorRT models normally have their classes baked in.
-    model_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/yolo/yoloe-26s-seg_box.engine
+    model_path: /home/ferdinand/unitree/src/go2_fetch_ros2/fetch/models/yolo/yoloe-26s-seg_box_pc.engine
     conf_threshold: 0.1
     yolo_classes: ["box"]
     inference_width: 640
@@ -23,7 +22,7 @@ cube_tracker_node:
     depth_scale_m: 0.001
 
     # --- Processing and diagnostics ---
-    processing_rate_hz: 15.0
+    processing_rate_hz: 8.0
     status_log_rate_hz: 2.0
     pipeline_log_rate_hz: 2.0
     enable_timing_log: true
@@ -60,17 +59,97 @@ cube_tracker_node:
     max_pose_speed_mps: 1.0
 
     # --- Coordinate frame and cube geometry ---
-    target_frame: base
+    target_frame: odom
     tf_timeout_s: 0.05
     camera_info_max_age_s: 5.0
     camera_info_stamp_tolerance_s: 1.0
     camera_info_aspect_tolerance: 0.02
     cube_dimensions: [0.16, 0.16, 0.16]
-    cube_position_offset_xyz: [0.08, 0.0, 0.0]
+    cube_position_offset_xyz: [0.0, 0.0, 0.0]
 
     # --- Debug visualization ---
     publish_debug_image: true
     publish_mask_image: false
+
+cube_tracker_pcl_node:
+  ros__parameters:
+    # --- Inputs, diagnostics, and final fused outputs ---
+    pointcloud_topic: /camera/depth/color/points
+    yolo_measurement_topic: /go2_fetch/yolo/cube_measurement
+    pcl_measurement_topic: /go2_fetch/pcl/cube_measurement
+    tracked_points_topic: /go2_fetch/pcl/tracked_points
+    cube_state_topic: /go2_fetch/cube_state
+    cube_visible_topic: /go2_fetch/cube_visible
+    cube_marker_topic: /go2_fetch/cube_marker
+    # Use a fixed world frame so robot motion is not interpreted as cube velocity.
+    target_frame: odom
+    # Maximum cloud callback rate. Frames above this rate are skipped, not queued.
+    processing_rate_hz: 30.0
+    # Periodic PCL pipeline status messages; set to 0 only if diagnostics are unwanted.
+    status_log_rate_hz: 2.0
+
+    # --- Cloud preprocessing and floor removal ---
+    # Points outside this distance from the camera are discarded before clustering.
+    min_range_m: 0.12
+    max_range_m: 4.0
+    # PCL voxel side length. Larger values reduce CPU use but remove cube detail.
+    voxel_leaf_m: 0.012
+    # Maximum point-to-plane distance for a point to be classified as floor.
+    floor_distance_threshold_m: 0.018
+    # The RANSAC floor normal must be within this angle of the odom Z axis.
+    floor_max_tilt_deg: 15.0
+    # RANSAC trials per cloud. Raise this if floor removal is unreliable; lower it
+    # if floor fitting dominates the 33 ms processing budget at 30 Hz.
+    floor_max_iterations: 60
+
+    # --- Euclidean clustering and cube-shape gates ---
+    # Maximum 3D distance between neighboring points belonging to one cluster.
+    cluster_tolerance_m: 0.035
+    # Smaller clusters are discarded immediately. Clusters between this and
+    # cluster_min_points are retained only as possible leg-occluded fragments.
+    fragment_min_points: 20
+    # Minimum points required by either a normal cube cluster or merged fragments.
+    cluster_min_points: 55
+    cluster_max_points: 12000
+    cube_dimensions: [0.16, 0.16, 0.16]
+    # Reject candidates whose measured bounding extent is implausibly small/large.
+    # The smaller threshold applies to horizontal extent; Z uses half of it.
+    cube_dimension_min_m: 0.045
+    cube_dimension_max_m: 0.28
+    # A normal or merged candidate must span at least this fraction of the known
+    # cube width. This prevents a small visible corner from updating the filter.
+    merged_min_visible_fraction: 0.5
+    # Fragments can be merged only when their camera ranges differ by less than this.
+    fragment_depth_tolerance_m: 0.10
+    # Once initialized, reject clusters farther than this from the predicted XY.
+    association_gate_m: 0.35
+
+    # --- Front-leg removal and occlusion merging ---
+    # Frames are groups of [thigh, calf, foot], one group per leg. Capsules are
+    # constructed between thigh-calf and calf-foot TF origins at the cloud stamp.
+    leg_frames: [FL_thigh, FL_calf, FL_foot, FR_thigh, FR_calf, FR_foot]
+    # Points within this radius of a leg capsule are removed as robot self-points.
+    leg_exclusion_radius_m: 0.065
+    # Two fragments may be joined only if their connecting line passes this close
+    # to a removed leg, indicating that the leg plausibly caused the split.
+    leg_merge_gap_radius_m: 0.11
+
+    # --- Constant-velocity EKF and delayed YOLO replay ---
+    # Standard deviation of unmodelled planar cube acceleration. Higher values
+    # let the filter change velocity faster but produce a less smooth estimate.
+    process_accel_std_mps2: 1.0
+    # XY position variances in m^2. Lower values trust that source more strongly.
+    pcl_measurement_variance_xy: 0.0064
+    yolo_measurement_variance_xy: 0.0035
+    # Squared Mahalanobis innovation limits. 9.21 and 13.82 approximately match
+    # 99% and 99.9% gates for a two-dimensional position observation.
+    pcl_innovation_gate: 9.21
+    yolo_innovation_gate: 13.82
+    # State/measurement history retained for rewinding and replaying delayed YOLO.
+    # YOLO results older than this window are rejected.
+    history_duration_s: 0.5
+    # Publish cube_visible=false after neither source has passed its gates this long.
+    detection_timeout_s: 0.5
 
 
 high_level_policy_node:

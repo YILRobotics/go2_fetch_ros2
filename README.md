@@ -81,6 +81,16 @@ pip install --no-cache-dir \
   pytz
 ```
 
+Install other things
+
+```bash
+rm -rf ~/miniconda3/envs/env_deploy/lib/python3.10/site-packages/setuptools-82.0.1-py3.10.egg-info
+
+python -m pip install --force-reinstall --no-cache-dir \
+    "setuptools==58.2.0" \
+    "wheel==0.37.1"
+```
+
 ### Install Unitree SDK2 Python
 
 `Unitree_sdk2py` is a Python library that enables direct communication with Unitree robots. It plays a crucial role in this project, allowing the system to collect sensor data from the robot and send velocity and motor commands in real time.

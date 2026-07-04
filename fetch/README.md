@@ -2,14 +2,16 @@
 
 ROS 2 Humble package for Go2 push-cube deployment:
 
-1. `cube_tracker_node`: RealSense + reduced-resolution YOLOE segmentation + aligned-depth filtering, publishes cube planar state.
+1. `cube_tracker_yolo_node`: RealSense + YOLOE segmentation, publishes delayed timestamped cube measurements.
+2. `cube_tracker_pcl_node` (from `fetch_pcl_tracker`): 30 Hz point-cloud tracking and delayed-measurement EKF fusion.
 2. `low_level_policy_node` (package `fetch_low_level`): C++ startup state machine, low-level TensorRT inference, and `/lowcmd` output.
 3. `high_level_policy_node`: Python high-level TensorRT policy, goal/cube recovery, Sport mode, and visualization.
 4. `state_machine_node`: Controls task-level modes.
 
 ## Architecture
 
-- `cube_tracker_node`
+- `cube_tracker_yolo_node`
+- `cube_tracker_pcl_node`
   - Subscribes:
     - `/camera/color/image_raw` (`sensor_msgs/Image`)
     - `/camera/aligned_depth_to_color/image_raw` (`sensor_msgs/Image`)

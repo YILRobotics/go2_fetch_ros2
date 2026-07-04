@@ -30,7 +30,12 @@ def generate_launch_description() -> LaunchDescription:
     depth_topic = '/camera/aligned_depth_to_color/image_raw'
     camera_info_topic = '/camera/color/camera_info'
     pointcloud_topic = '/camera/depth/color/points'
-    use_dummy_publisher = 'false'
+    use_dummy_publisher_arg = DeclareLaunchArgument(
+        'use_dummy_publisher',
+        default_value='false',
+        description='Use synchronized saved RGB/depth/cloud data instead of RealSense.',
+    )
+    use_dummy_publisher = LaunchConfiguration('use_dummy_publisher')
     use_rviz = 'true'
     rviz_config = default_rviz_config
     camera_namespace = ''
@@ -52,10 +57,10 @@ def generate_launch_description() -> LaunchDescription:
             'pointcloud__neon_.ordered_pc': True,
             'pointcloud__neon_.ordered_pc': True,
             'align_depth.enable': True,
-            # 'depth_module.profile': '640x480x30',
-            # 'rgb_camera.profile': '640x480x30',
-            'depth_module.depth_profile': '1280x720x30',
-            'rgb_camera.color_profile': '1280x720x30',
+            'depth_module.profile': '640x360x30',
+            'rgb_camera.profile': '640x360x30',
+            # 'depth_module.depth_profile': '1280x720x30',
+            # 'rgb_camera.color_profile': '1280x720x30',
             'decimation_filter.enable': True,
             'decimation_filter.filter_magnitude': 4,
             'spatial_filter.enable': True,
@@ -84,21 +89,24 @@ def generate_launch_description() -> LaunchDescription:
         output='screen',
         emulate_tty=True,
         parameters=[{
-            'image_path': os.path.join(fetch_share, '..', 'data', 'realsense_color_cube.png'),
-            'pointcloud_npy_path': os.path.join(fetch_share, '..', 'data', 'realsense_points_cube.npy'),
+            'image_path': os.path.join(fetch_share, 'data', 'realsense_color_box.png'),
+            'pointcloud_npy_path': os.path.join(fetch_share, 'data', 'realsense_points_box.npy'),
             'image_topic': image_topic,
+            'depth_topic': depth_topic,
+            'camera_info_topic': camera_info_topic,
             'pointcloud_topic': pointcloud_topic,
             'frame_id': 'camera_color_optical_frame',
             'publish_rate_hz': 30.0,
             'max_points': 500000,
+            'published_cloud_max_points': 50000,
         }],
         condition=IfCondition(use_dummy_publisher),
     )
 
-    cube_tracker = Node(
+    cube_tracker_yolo = Node(
         package='fetch',
-        executable='cube_tracker_node',
-        name='cube_tracker_node',
+        executable='cube_tracker_yolo_node',
+        name='cube_tracker_yolo_node',
         output='screen',
         emulate_tty=True,
         respawn=True,
@@ -113,6 +121,17 @@ def generate_launch_description() -> LaunchDescription:
                 'inference_height': 360,
             },
         ],
+    )
+
+    cube_tracker_pcl = Node(
+        package='fetch_pcl_tracker',
+        executable='cube_tracker_pcl_node',
+        name='cube_tracker_pcl_node',
+        output='screen',
+        emulate_tty=True,
+        respawn=True,
+        respawn_delay=2.0,
+        parameters=[params_file, {'pointcloud_topic': pointcloud_topic}],
     )
 
     rviz_with_config = Node(
@@ -142,14 +161,17 @@ def generate_launch_description() -> LaunchDescription:
             package="tf2_ros",
             executable="static_transform_publisher",
             output="screen" ,
-            arguments=["-0.1", "0.01", "-0.1", "0", "0.5236", "0", "base", "camera_link"]
+            arguments=["-0.1", "0.01", "-0.1", "0", "0.5236", "0", "base", "camera_link"],
+            condition=UnlessCondition(use_dummy_publisher),
         )
 
 
     return LaunchDescription([
-        realsense,
-        # dummy_realsense_publisher,
-        cube_tracker,
+        use_dummy_publisher_arg,
+        # realsense,
+        dummy_realsense_publisher,
+        cube_tracker_yolo,
+        cube_tracker_pcl,
         # rviz_with_config,
         # IncludeLaunchDescription(
         #     PythonLaunchDescriptionSource([full_state_publisher_launch_file]),
