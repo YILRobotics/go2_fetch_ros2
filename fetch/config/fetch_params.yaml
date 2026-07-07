@@ -13,7 +13,7 @@ cube_tracker_yolo_node:
     # --- Detector model ---
     # Open-vocabulary classes are applied to compatible YOLOE .pt models.
     # Exported ONNX/TensorRT models normally have their classes baked in.
-    model_path: /home/ferdinand/unitree/src/go2_fetch_ros2/fetch/models/yolo/yoloe-26s-seg_box_pc.engine
+    model_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/yolo/yoloe-26s-seg_box.engine
     conf_threshold: 0.1
     yolo_classes: ["box"]
     inference_width: 640
@@ -212,7 +212,7 @@ high_level_policy_node:
     sport_request_topic: /api/sport/request
     policy_world_frame: odom
     lf_foot_frame: FL_foot
-    lf_foot_tf_timeout_s: 0.02
+    lf_foot_tf_timeout_s: 0.06
     cube_state_tf_timeout_s: 0.05
     # nav_msgs/Odometry twist is normally expressed in child_frame_id.
     robot_twist_in_body_frame: true
@@ -230,7 +230,7 @@ high_level_policy_node:
     velocity_marker_rate_hz: 15.0
 
     # --- Policy models and inference rates ---
-    high_level_policy_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/unitree_go2_pushcube_4l/2026-06-30_13-49-47_ff_5_1/policy.engine
+    high_level_policy_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/unitree_go2_pushcube_4l/2026-07-07_10-07-42_ff_5_19/policy.engine
     high_level_rate_hz: 15.384615
     high_level_num_obs: 52
 
