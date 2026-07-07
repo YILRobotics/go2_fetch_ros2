@@ -162,26 +162,27 @@ private:
     declare_parameter("floor_max_iterations", 60);
     declare_parameter("cluster_tolerance_m", 0.035);
     declare_parameter("fragment_min_points", 15);
-    declare_parameter("cluster_min_points", 55);
+    declare_parameter("cluster_min_points", 40);
     declare_parameter("cluster_max_points", 12000);
     declare_parameter("cube_dimensions", std::vector<double>{0.16, 0.16, 0.16});
     declare_parameter("cube_dimension_min_m", 0.045);
     declare_parameter("cube_dimension_max_m", 0.28);
-    declare_parameter("merged_min_visible_fraction", 0.5);
-    declare_parameter("fragment_depth_tolerance_m", 0.10);
-    declare_parameter("association_gate_m", 0.35);
+    declare_parameter("merged_min_visible_fraction", 0.4);
+    declare_parameter("fragment_depth_tolerance_m", 0.15);
+    declare_parameter("association_gate_m", 0.60);
     declare_parameter(
       "leg_frames", std::vector<std::string>{
         "FL_thigh", "FL_calf", "FL_foot", "FR_thigh", "FR_calf", "FR_foot"});
     declare_parameter("leg_exclusion_radius_m", 0.065);
-    declare_parameter("leg_merge_gap_radius_m", 0.11);
-    declare_parameter("process_accel_std_mps2", 1.0);
+    declare_parameter("leg_merge_gap_radius_m", 0.13);
+    declare_parameter("process_accel_std_mps2", 1.5);
+    declare_parameter("velocity_decay_tau_s", 0.25);
     declare_parameter("pcl_measurement_variance_xy", 0.0064);
     declare_parameter("yolo_measurement_variance_xy", 0.0025);
     declare_parameter("pcl_innovation_gate", 9.21);
     declare_parameter("yolo_innovation_gate", 13.82);
-    declare_parameter("history_duration_s", 1.0);
-    declare_parameter("detection_timeout_s", 0.5);
+    declare_parameter("history_duration_s", 0.5);
+    declare_parameter("detection_timeout_s", 2.2);
   }
 
   void read_parameters()
@@ -220,6 +221,10 @@ private:
     leg_radius_ = get_parameter("leg_exclusion_radius_m").as_double();
     leg_merge_radius_ = get_parameter("leg_merge_gap_radius_m").as_double();
     process_accel_std_ = get_parameter("process_accel_std_mps2").as_double();
+    velocity_decay_tau_ = get_parameter("velocity_decay_tau_s").as_double();
+    if (velocity_decay_tau_ <= 0.0) {
+      throw std::invalid_argument("velocity_decay_tau_s must be greater than zero");
+    }
     pcl_variance_ = get_parameter("pcl_measurement_variance_xy").as_double();
     yolo_variance_ = get_parameter("yolo_measurement_variance_xy").as_double();
     pcl_gate_ = get_parameter("pcl_innovation_gate").as_double();
@@ -455,7 +460,9 @@ private:
     Mat4 covariance;
     double state_time;
     latest_filter_state(state, covariance, state_time);
-    predict(state, covariance, std::max(0.0, time - state_time));
+    predict(
+      state, covariance, std::max(0.0, time - state_time),
+      process_accel_std_, velocity_decay_tau_);
     return state.head<2>();
   }
 
@@ -582,11 +589,20 @@ private:
     status_window_start_ = now;
   }
 
-  static void predict(Vec4 & state, Mat4 & covariance, double dt, double acceleration_std = 1.0)
+  static void predict(
+    Vec4 & state, Mat4 & covariance, double dt,
+    double acceleration_std, double velocity_decay_tau)
   {
     if (dt <= 0.0) {return;}
+
+    // A rolling cube loses speed to floor friction. Exponential damping avoids the
+    // unbounded position drift of a constant-velocity model during an occlusion.
+    // The exact discrete transition also makes the result independent of callback rate.
+    const double velocity_decay = std::exp(-dt / velocity_decay_tau);
+    const double position_gain = velocity_decay_tau * (1.0 - velocity_decay);
     Mat4 transition = Mat4::Identity();
-    transition(0, 2) = dt; transition(1, 3) = dt;
+    transition(0, 2) = position_gain; transition(1, 3) = position_gain;
+    transition(2, 2) = velocity_decay; transition(3, 3) = velocity_decay;
     const double q = acceleration_std * acceleration_std;
     const double dt2 = dt * dt, dt3 = dt2 * dt, dt4 = dt2 * dt2;
     Mat4 process = Mat4::Zero();
@@ -652,7 +668,9 @@ private:
     double state_time = index == 0 ? anchor_time_ : entries_[index - 1].measurement.time;
     bool inserted_accepted = false;
     for (std::size_t i = index; i < entries_.size(); ++i) {
-      predict(state, covariance, std::max(0.0, entries_[i].measurement.time - state_time), process_accel_std_);
+      predict(
+        state, covariance, std::max(0.0, entries_[i].measurement.time - state_time),
+        process_accel_std_, velocity_decay_tau_);
       const bool accepted = correct(state, covariance, entries_[i].measurement);
       if (i == index) {inserted_accepted = accepted;}
       entries_[i].state = state;
@@ -675,7 +693,9 @@ private:
     Mat4 covariance = index == 0 ? anchor_covariance_ : entries_[index - 1].covariance;
     double state_time = index == 0 ? anchor_time_ : entries_[index - 1].measurement.time;
     for (std::size_t i = index; i < entries_.size(); ++i) {
-      predict(state, covariance, std::max(0.0, entries_[i].measurement.time - state_time), process_accel_std_);
+      predict(
+        state, covariance, std::max(0.0, entries_[i].measurement.time - state_time),
+        process_accel_std_, velocity_decay_tau_);
       correct(state, covariance, entries_[i].measurement);
       entries_[i].state = state; entries_[i].covariance = covariance;
       state_time = entries_[i].measurement.time;
@@ -720,7 +740,9 @@ private:
     if (!initialized_) {return;}
     Vec4 state; Mat4 covariance; double state_time;
     latest_filter_state(state, covariance, state_time);
-    predict(state, covariance, std::max(0.0, time - state_time), process_accel_std_);
+    predict(
+      state, covariance, std::max(0.0, time - state_time),
+      process_accel_std_, velocity_decay_tau_);
     nav_msgs::msg::Odometry output;
     output.header.frame_id = target_frame_;
     output.header.stamp = seconds_to_stamp(time);
@@ -779,14 +801,15 @@ private:
   double min_range_{0.12}, max_range_{4.0}, voxel_leaf_{0.012};
   double floor_threshold_{0.018}, floor_tilt_rad_{0.26}, cluster_tolerance_{0.035};
   int floor_max_iterations_{60};
-  int fragment_min_points_{15}, cluster_min_points_{55}, cluster_max_points_{12000};
+  int fragment_min_points_{15}, cluster_min_points_{40}, cluster_max_points_{12000};
   Eigen::Vector3d cube_dimensions_{0.16, 0.16, 0.16};
-  double cube_dimension_min_{0.045}, cube_dimension_max_{0.28}, merged_visible_fraction_{0.5};
-  double fragment_depth_tolerance_{0.10}, association_gate_{0.35};
+  double cube_dimension_min_{0.045}, cube_dimension_max_{0.28}, merged_visible_fraction_{0.4};
+  double fragment_depth_tolerance_{0.15}, association_gate_{0.60};
   std::vector<std::string> leg_frames_;
-  double leg_radius_{0.065}, leg_merge_radius_{0.11};
-  double process_accel_std_{1.0}, pcl_variance_{0.0064}, yolo_variance_{0.0025};
-  double pcl_gate_{9.21}, yolo_gate_{13.82}, history_duration_{1.0}, detection_timeout_{0.5};
+  double leg_radius_{0.065}, leg_merge_radius_{0.13};
+  double process_accel_std_{1.5}, velocity_decay_tau_{0.25};
+  double pcl_variance_{0.0064}, yolo_variance_{0.0025};
+  double pcl_gate_{9.21}, yolo_gate_{13.82}, history_duration_{0.5}, detection_timeout_{2.2};
 
   tf2_ros::Buffer tf_buffer_;
   tf2_ros::TransformListener tf_listener_;

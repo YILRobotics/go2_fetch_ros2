@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import math
 import json
+import csv
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,6 +34,12 @@ from fetch.deploy_real_utils import (
     KeyMap,
     RemoteController,
     get_gravity_orientation,
+)
+from fetch.policy_observation import (
+    TimedCubeState,
+    build_pushcube_observation,
+    reorder_and_correct_foot_force,
+    select_cube_state,
 )
 
 CONTROL_MODE_HIERARCHICAL_LOWCMD = "hierarchical_lowcmd"
@@ -297,6 +305,7 @@ class HighLevelPolicyNode(Node):
 
         # Cube-loss recovery rotation.
         self.declare_parameter("cube_state_timeout_s", 0.5)
+        self.declare_parameter("cube_target_age_s", 0.065)
         self.declare_parameter("cube_stale_stop_ramp_s", 1.0)
         self.declare_parameter("cube_recovery_angular_cmd", 0.5)
         self.declare_parameter("cube_recovery_front_angle_deg", 20.0)
@@ -341,7 +350,7 @@ class HighLevelPolicyNode(Node):
             "high_level_policy_path",
             "logs/rsl_rl/unitree_go2_pushcube_4l/2026-05-15_02-52-05_cam_6/exported/policy.engine",
         )
-        self.declare_parameter("high_level_rate_hz", 15.0)
+        self.declare_parameter("high_level_rate_hz", 15.384615)
         self.declare_parameter("high_level_num_obs", 52)
 
         # Unitree Sport high-level control.
@@ -352,7 +361,7 @@ class HighLevelPolicyNode(Node):
 
         # High-level observation shape and command limits.
         self.declare_parameter("num_actions", 12)
-        self.declare_parameter("max_cmd", [1.0, 1.0, 1.0])
+        self.declare_parameter("max_cmd", [0.6, 0.4, 0.8])
 
         # Joint state fields included in the high-level observation.
         self.declare_parameter("leg_joint2motor_idx", [3, 0, 9, 6, 4, 1, 10, 7, 5, 2, 11, 8])
@@ -365,6 +374,7 @@ class HighLevelPolicyNode(Node):
         self.declare_parameter("high_level_command_log_period_s", 1.0)
         self.declare_parameter("plot_on_exit", False)
         self.declare_parameter("analysis_pdf_path", "analyse_robot.png")
+        self.declare_parameter("observation_csv_path", "")
 
     def _control_mode_from_parameter(self) -> str:
         control_mode = str(self.get_parameter("control_mode").value)
@@ -532,6 +542,7 @@ class HighLevelPolicyNode(Node):
         self.qj = np.zeros(self.config.num_actions, dtype=np.float32)
         self.dqj = np.zeros(self.config.num_actions, dtype=np.float32)
         self.high_level_action = np.zeros(3, dtype=np.float32)
+        self.previous_clamped_command = np.zeros(3, dtype=np.float32)
         self.high_level_obs = np.zeros(
             int(self.get_parameter("high_level_num_obs").value), dtype=np.float32
         )
@@ -540,8 +551,9 @@ class HighLevelPolicyNode(Node):
         self.robot_yaw = 0.0
         self.cube_pos_xy = np.zeros(2, dtype=np.float32)
         self.cube_lin_vel_xy = np.zeros(2, dtype=np.float32)
-        self._previous_cube_pos_world_xy = None
-        self._previous_cube_pos_time = -math.inf
+        self._cube_state_history = deque(maxlen=256)
+        self._selected_cube_state = None
+        self.robot_quaternion_world_from_base = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
         self._last_cube_state_time = -math.inf
         self._cube_state_stale_logged = False
         self._cube_state_tf_warned = False
@@ -634,6 +646,9 @@ class HighLevelPolicyNode(Node):
         self.base_lin_vel_input[3] = msg.twist.twist.angular.z
         self.robot_pos_xy[:] = [msg.pose.pose.position.x, msg.pose.pose.position.y]
         orientation = msg.pose.pose.orientation
+        self.robot_quaternion_world_from_base[:] = [
+            orientation.w, orientation.x, orientation.y, orientation.z
+        ]
         self.robot_yaw = math.atan2(
             2.0 * (orientation.w * orientation.z + orientation.x * orientation.y),
             1.0 - 2.0 * (orientation.y * orientation.y + orientation.z * orientation.z),
@@ -656,48 +671,46 @@ class HighLevelPolicyNode(Node):
     def _cube_state_callback(self, msg: Odometry) -> None:
         if self.fake_cube_observation_mode:
             return
-        pos_xy = self._transform_cube_position_to_policy_frame(msg)
-        if pos_xy is None:
+        transformed = self._transform_cube_state_to_policy_frame(msg)
+        if transformed is None:
             return
-
-        # Estimate velocity only after the cube position is in the fixed policy
-        # world frame. Differentiating the tracker position while it is in the
-        # moving base frame makes a stationary cube appear to move opposite the
-        # robot.
+        pos_xy, vel_xy = transformed
         now = time.monotonic()
-        sample_time = now
-        vel_xy = np.zeros(2, dtype=np.float32)
-        if self._previous_cube_pos_world_xy is not None:
-            dt = sample_time - self._previous_cube_pos_time
-            timeout_s = float(self.get_parameter("cube_state_timeout_s").value)
-            if dt >= 1e-3 and (timeout_s <= 0.0 or dt <= timeout_s):
-                vel_xy = (pos_xy - self._previous_cube_pos_world_xy) / dt
-
+        sample_time = msg.header.stamp.sec + msg.header.stamp.nanosec * 1.0e-9
+        if sample_time <= 0.0:
+            sample_time = self.get_clock().now().nanoseconds * 1.0e-9
         self.cube_pos_xy[:] = pos_xy
         self.cube_lin_vel_xy[:] = vel_xy
-        self._previous_cube_pos_world_xy = pos_xy.copy()
-        self._previous_cube_pos_time = sample_time
+        state = TimedCubeState(sample_time, pos_xy.copy(), vel_xy.copy())
+        if not self._cube_state_history or sample_time >= self._cube_state_history[-1].stamp_s:
+            self._cube_state_history.append(state)
         self._last_cube_state_time = now
         self._cube_state_stale_logged = False
 
-    def _transform_cube_position_to_policy_frame(
+    def _transform_cube_state_to_policy_frame(
         self, msg: Odometry
-    ) -> np.ndarray | None:
+    ) -> tuple[np.ndarray, np.ndarray] | None:
         source_frame = msg.header.frame_id
         target_frame = str(self.get_parameter("policy_world_frame").value)
         pos_xy = np.array(
             [msg.pose.pose.position.x, msg.pose.pose.position.y], dtype=np.float32
         )
+        vel_xy = np.array(
+            [msg.twist.twist.linear.x, msg.twist.twist.linear.y], dtype=np.float32
+        )
         if not source_frame or source_frame == target_frame:
             self._cube_state_tf_warned = False
-            return pos_xy
+            return pos_xy, vel_xy
 
         timeout = Duration(
             seconds=float(self.get_parameter("cube_state_tf_timeout_s").value)
         )
         try:
             transform = self.tf_buffer.lookup_transform(
-                target_frame, source_frame, Time(), timeout=timeout
+                target_frame,
+                source_frame,
+                Time.from_msg(msg.header.stamp),
+                timeout=timeout,
             )
         except Exception as exc:
             if not self._cube_state_tf_warned:
@@ -725,7 +738,14 @@ class HighLevelPolicyNode(Node):
             dtype=np.float32,
         )
         rotated_pos += np.array([translation.x, translation.y], dtype=np.float32)
-        return rotated_pos
+        rotated_vel = np.array(
+            [
+                cos_yaw * vel_xy[0] - sin_yaw * vel_xy[1],
+                sin_yaw * vel_xy[0] + cos_yaw * vel_xy[1],
+            ],
+            dtype=np.float32,
+        )
+        return rotated_pos, rotated_vel
 
     def _apply_fake_cube_observation(self) -> None:
         self.cube_pos_xy[:] = self._xy_parameter("fake_cube_position_xy")
@@ -950,11 +970,14 @@ class HighLevelPolicyNode(Node):
         self._sport_stop_sent = True
 
     def _set_high_level_policy_enabled(self, enabled: bool) -> None:
+        was_enabled = self.use_high_level_policy
         self.use_high_level_policy = bool(enabled)
         self._next_high_level_time = -math.inf
         self._stale_cube_ramp_start_time = -math.inf
         if self.use_high_level_policy:
             self._cube_recovery_active = False
+            if not was_enabled:
+                self.previous_clamped_command[:] = 0.0
         if not self.use_high_level_policy:
             self.cmd[:] = 0.0
             if self._uses_unitree_sport_high_level():
@@ -1163,6 +1186,7 @@ class HighLevelPolicyNode(Node):
             -self.config.max_cmd,
             self.config.max_cmd,
         )
+        self.previous_clamped_command[:] = self.cmd
         self._log_high_level_command(now)
 
     def _log_high_level_command(self, now: float | None = None) -> None:
@@ -1446,39 +1470,51 @@ class HighLevelPolicyNode(Node):
     def _build_high_level_observation(
         self, ang_vel, gravity_orientation, qj_obs, dqj_obs
     ) -> np.ndarray:
-        lf_foot_xy = self._lookup_lf_foot_xy()
         if self.fake_cube_observation_mode:
             self._apply_fake_cube_observation()
-        # Training used a goal-centered world frame with goal_xy == [0, 0].
-        # Keep all displacement vectors unchanged, but translate absolute
-        # positions so deployment has the same world-origin convention.
-        robot_pos_goal_frame = self.robot_pos_xy - self.goal_xy
-        cube_pos_goal_frame = self.cube_pos_xy - self.goal_xy
-        goal_pos_goal_frame = np.zeros(2, dtype=np.float32)
-        obs = np.concatenate(
-            [
-                np.asarray(ang_vel, dtype=np.float32) * 0.2,
-                np.asarray(gravity_orientation, dtype=np.float32),
-                qj_obs,
-                dqj_obs * 0.05,
-                self.high_level_action,
-                robot_pos_goal_frame,
-                self.robot_lin_vel_world_xy,
-                cube_pos_goal_frame,
-                self.cube_lin_vel_xy,
-                goal_pos_goal_frame,
-                np.array([self.goal_radius], dtype=np.float32),
-                self.goal_xy - self.cube_pos_xy,
-                self.cube_pos_xy - lf_foot_xy,
-                self._scaled_foot_force(),
-            ]
-        ).astype(np.float32)
+            cube_position = self.cube_pos_xy.copy()
+            cube_velocity = self.cube_lin_vel_xy.copy()
+            cube_stamp_s = None
+        else:
+            target_stamp = (
+                self.get_clock().now().nanoseconds * 1.0e-9
+                - float(self.get_parameter("cube_target_age_s").value)
+            )
+            state = select_cube_state(self._cube_state_history, target_stamp)
+            if state is None:
+                raise RuntimeError("No timestamped cube state is available")
+            self._selected_cube_state = state
+            cube_position = state.position_world_xy
+            cube_velocity = state.velocity_world_xy
+            cube_stamp_s = state.stamp_s
+        lf_foot_xy = self._lookup_lf_foot_xy(cube_stamp_s)
+
+        obs = build_pushcube_observation(
+            angular_velocity_base=ang_vel,
+            projected_gravity=gravity_orientation,
+            joint_position_relative=qj_obs,
+            joint_velocity=dqj_obs,
+            previous_clamped_command=self.previous_clamped_command,
+            robot_position_world_xy=self.robot_pos_xy,
+            robot_velocity_world_xy=self.robot_lin_vel_world_xy,
+            cube_position_world_xy=cube_position,
+            cube_velocity_world_xy=cube_velocity,
+            goal_position_world_xy=self.goal_xy,
+            goal_radius=self.goal_radius,
+            lf_foot_position_world_xy=lf_foot_xy,
+            foot_force=self._corrected_foot_force(),
+            foot_force_scale=float(self.get_parameter("foot_force_scale").value),
+            quaternion_world_from_base_wxyz=np.asarray(
+                self.low_state.imu_state.quaternion, dtype=np.float32
+            ),
+        )
         self._require_observation_size(
             obs, int(self.get_parameter("high_level_num_obs").value), "High-level"
         )
+        self._append_observation_csv(obs)
         return obs
 
-    def _scaled_foot_force(self) -> np.ndarray:
+    def _corrected_foot_force(self) -> np.ndarray:
         foot_force_offset = np.asarray(
             self.get_parameter("foot_force_offset").value, dtype=np.float32
         )
@@ -1489,27 +1525,41 @@ class HighLevelPolicyNode(Node):
         )
         if foot_force_clip_max <= 0.0:
             raise ValueError("foot_force_clip_max must be greater than zero")
-        foot_force_scale = float(self.get_parameter("foot_force_scale").value)
-        if foot_force_scale <= 0.0:
-            raise ValueError("foot_force_scale must be greater than zero")
         foot_force = np.asarray(self.low_state.foot_force, dtype=np.float32)
-        corrected_foot_force = np.clip(
-            foot_force - foot_force_offset,
-            0.0,
-            foot_force_clip_max,
+        corrected_foot_force = reorder_and_correct_foot_force(
+            foot_force, foot_force_offset
         )
-        # Unitree: [FR, FL, RR, RL]; Isaac Lab policy: [FL, FR, RL, RR].
-        return corrected_foot_force[[1, 0, 3, 2]] / foot_force_scale
+        return np.clip(corrected_foot_force, 0.0, foot_force_clip_max)
 
-    def _lookup_lf_foot_xy(self) -> np.ndarray:
+    def _append_observation_csv(self, observation: np.ndarray) -> None:
+        path_value = str(self.get_parameter("observation_csv_path").value).strip()
+        if not path_value:
+            return
+        path = Path(path_value).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_header = not path.exists() or path.stat().st_size == 0
+        with path.open("a", newline="", encoding="utf-8") as stream:
+            writer = csv.writer(stream)
+            if write_header:
+                writer.writerow(["ros_time_s", *[f"obs_{index}" for index in range(52)]])
+            writer.writerow(
+                [self.get_clock().now().nanoseconds * 1.0e-9, *observation.tolist()]
+            )
+
+    def _lookup_lf_foot_xy(self, stamp_s: float | None = None) -> np.ndarray:
         world_frame = str(self.get_parameter("policy_world_frame").value)
         foot_frame = str(self.get_parameter("lf_foot_frame").value)
         timeout = Duration(
             seconds=float(self.get_parameter("lf_foot_tf_timeout_s").value)
         )
         try:
+            lookup_time = (
+                Time()
+                if stamp_s is None
+                else Time(nanoseconds=int(stamp_s * 1.0e9))
+            )
             transform = self.tf_buffer.lookup_transform(
-                world_frame, foot_frame, Time(), timeout=timeout
+                world_frame, foot_frame, lookup_time, timeout=timeout
             )
         except Exception as exc:
             raise RuntimeError(

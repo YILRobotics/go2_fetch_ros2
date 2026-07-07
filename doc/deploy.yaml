@@ -1,0 +1,236 @@
+joint_ids_map: [3, 0, 9, 6, 4, 1, 10, 7, 5, 2, 11, 8]
+step_dt: 0.065
+stiffness: [25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0]
+damping: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+default_joint_pos: [0.1, -0.1, 0.1, -0.1, 0.8, 0.8, 1.0, 1.0, -1.5, -1.5, -1.5, -1.5]
+commands:
+  base_velocity:
+    ranges:
+      lin_vel_x: [-0.6, 0.6]
+      lin_vel_y: [-0.4, 0.4]
+      ang_vel_z: [-0.8, 0.8]
+      heading: null
+actions:
+  pre_trained_policy_action:
+    clip: null
+    policy_path: /home/ferdinand/fetchrobot/ferdinand/go2_fetch_rl/logs/rsl_rl/unitree_go2_velocity_4l/2026-06-30_11-11-40_walk_ff_5/exported/policy.pt
+    low_level_decimation: 4
+    low_level_actions:
+      class_type: unitree_rl_lab.tasks.mdp.actions:DelayedJointPositionAction
+      asset_name: robot
+      debug_vis: false
+      clip:
+        .*: !!python/tuple [-100.0, 100.0]
+      joint_names: [.*]
+      scale: 0.25
+      offset: 0.0
+      preserve_order: false
+      use_default_offset: true
+      min_delay: 0
+      max_delay: 1
+    low_level_observations:
+      concatenate_terms: true
+      concatenate_dim: -1
+      enable_corruption: false
+      history_length: null
+      flatten_history_dim: true
+      base_ang_vel:
+        func: isaaclab.envs.mdp.observations:base_ang_vel
+        params: {}
+        modifiers: null
+        noise: null
+        clip: !!python/tuple [-100, 100]
+        scale: 0.2
+        history_length: 0
+        flatten_history_dim: true
+      projected_gravity:
+        func: isaaclab.envs.mdp.observations:projected_gravity
+        params: {}
+        modifiers: null
+        noise: null
+        clip: !!python/tuple [-100, 100]
+        scale: null
+        history_length: 0
+        flatten_history_dim: true
+      velocity_commands:
+        func: 'lambda dummy_env: self._raw_actions'
+        params: {}
+        modifiers: null
+        noise: null
+        clip: !!python/tuple [-100, 100]
+        scale: null
+        history_length: 0
+        flatten_history_dim: true
+      joint_pos_rel:
+        func: isaaclab.envs.mdp.observations:joint_pos_rel
+        params: {}
+        modifiers: null
+        noise: null
+        clip: !!python/tuple [-100, 100]
+        scale: null
+        history_length: 0
+        flatten_history_dim: true
+      joint_vel_rel:
+        func: isaaclab.envs.mdp.observations:joint_vel_rel
+        params: {}
+        modifiers: null
+        noise: null
+        clip: !!python/tuple [-100, 100]
+        scale: 0.05
+        history_length: 0
+        flatten_history_dim: true
+      foot_force:
+        func: unitree_rl_lab.tasks.mdp.observations:foot_force
+        params:
+          sensor_cfg:
+            name: contact_forces
+            joint_names: null
+            joint_ids: !!python/object/apply:builtins.slice [null, null, null]
+            fixed_tendon_names: null
+            fixed_tendon_ids: !!python/object/apply:builtins.slice [null, null, null]
+            body_names: .*_foot
+            body_ids: !!python/object/apply:builtins.slice [null, null, null]
+            object_collection_names: null
+            object_collection_ids: !!python/object/apply:builtins.slice [null, null,
+              null]
+            preserve_order: false
+          record_low_level_sample: true
+        modifiers: null
+        noise: null
+        clip: !!python/tuple [0, 150]
+        scale: 0.01
+        history_length: 0
+        flatten_history_dim: true
+      actions:
+        func: 'lambda dummy_env: last_action()'
+        params: {}
+        modifiers: null
+        noise: null
+        clip: !!python/tuple [-100, 100]
+        scale: null
+        history_length: 0
+        flatten_history_dim: true
+    command_limits: !!python/tuple [0.6, 0.4, 0.8]
+    initial_command_limits: !!python/tuple [0.1, 0.1, 0.1]
+    command_limit_curriculum_steps: 5000
+    scale: [1.0, 1.0, 1.0]
+observations:
+  base_ang_vel:
+    params: {}
+    clip: [-100, 100]
+    scale: [0.2, 0.2, 0.2]
+    history_length: 1
+  projected_gravity:
+    params: {}
+    clip: [-100, 100]
+    scale: [1.0, 1.0, 1.0]
+    history_length: 1
+  joint_pos_rel:
+    params: {}
+    clip: [-100, 100]
+    scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    history_length: 1
+  joint_vel_rel:
+    params: {}
+    clip: [-100, 100]
+    scale: [0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05]
+    history_length: 1
+  previous_action:
+    params: {}
+    clip: [-100, 100]
+    scale: [1.0, 1.0, 1.0]
+    history_length: 1
+  robot_pos_xy:
+    params: {}
+    clip: [-100, 100]
+    scale: [0.5, 0.5]
+    history_length: 1
+  robot_lin_vel_xy:
+    params: {}
+    clip: [-100, 100]
+    scale: [1.0, 1.0]
+    history_length: 1
+  cube_pos_xy:
+    params: {noise_std: 0.08, dropout_prob: 0.04, delay_steps: 1, spike_prob: 0.04,
+      spike_std: 0.1, curriculum_steps: 10000}
+    clip: [-100, 100]
+    scale: [0.5, 0.5]
+    history_length: 1
+  cube_lin_vel_xy:
+    params: {noise_std: 0.15, dropout_prob: 0.04, delay_steps: 1, spike_prob: 0.05,
+      spike_std: 0.4, curriculum_steps: 10000}
+    clip: [-100, 100]
+    scale: [1.0, 1.0]
+    history_length: 1
+  goal_pos_xy:
+    params:
+      goal_xy: !!python/tuple [0.0, 0.0]
+    clip: [-100, 100]
+    scale: [1.0, 1.0]
+    history_length: 1
+  goal_radius:
+    params: {goal_radius: 0.2}
+    clip: [-100, 100]
+    scale: [1.0]
+    history_length: 1
+  cube_to_goal_xy:
+    params:
+      goal_xy: !!python/tuple [0.0, 0.0]
+      noise_std: 0.08
+      dropout_prob: 0.04
+      delay_steps: 1
+      spike_prob: 0.04
+      spike_std: 0.1
+      curriculum_steps: 10000
+    clip: [-100, 100]
+    scale: [0.5, 0.5]
+    history_length: 1
+  lf_foot_to_cube_xy:
+    params:
+      foot_cfg:
+        name: robot
+        joint_names: null
+        joint_ids: !!python/object/apply:builtins.slice [null, null, null]
+        fixed_tendon_names: null
+        fixed_tendon_ids: !!python/object/apply:builtins.slice [null, null, null]
+        body_names: [FL_foot.*]
+        body_ids: [15]
+        object_collection_names: null
+        object_collection_ids: !!python/object/apply:builtins.slice [null, null, null]
+        preserve_order: false
+      cube_cfg:
+        name: cube
+        joint_names: null
+        joint_ids: !!python/object/apply:builtins.slice [null, null, null]
+        fixed_tendon_names: null
+        fixed_tendon_ids: !!python/object/apply:builtins.slice [null, null, null]
+        body_names: null
+        body_ids: !!python/object/apply:builtins.slice [null, null, null]
+        object_collection_names: null
+        object_collection_ids: !!python/object/apply:builtins.slice [null, null, null]
+        preserve_order: false
+      noise_std: 0.08
+      dropout_prob: 0.04
+      delay_steps: 1
+      spike_prob: 0.04
+      spike_std: 0.1
+      curriculum_steps: 10000
+    clip: [-100, 100]
+    scale: [1.0, 1.0]
+    history_length: 1
+  foot_force:
+    params:
+      sensor_cfg:
+        name: contact_forces
+        joint_names: null
+        joint_ids: !!python/object/apply:builtins.slice [null, null, null]
+        fixed_tendon_names: null
+        fixed_tendon_ids: !!python/object/apply:builtins.slice [null, null, null]
+        body_names: [.*_foot]
+        body_ids: [4, 8, 14, 18]
+        object_collection_names: null
+        object_collection_ids: !!python/object/apply:builtins.slice [null, null, null]
+        preserve_order: false
+    clip: [0, 150]
+    scale: [0.01, 0.01, 0.01, 0.01]
+    history_length: 1

@@ -88,7 +88,7 @@ stack from:
 The PushCube-4L task uses a hierarchical policy stack:
 
 ```text
-high-level push policy: 48 observations -> 3 velocity commands
+high-level push policy: 52 observations -> 3 velocity commands
 low-level 4L velocity policy: 45 observations -> 12 joint actions
 ```
 
@@ -96,23 +96,29 @@ The high-level output is not sent directly to the motors. It becomes the velocit
 
 ### High-Level Push Policy
 
-The high-level PushCube policy input is 48 values:
+The post-`ff_5_2` high-level PushCube policy input is 52 values:
 
 ```text
 0:3    base angular velocity * 0.2
 3:6    projected gravity
 6:18   joint positions relative to default
 18:30  joint velocities * 0.05
-30:33  previous high-level action
-33:35  robot XY position
-35:37  robot XY linear velocity
-37:39  cube XY position
-39:41  cube XY velocity
-41:43  goal XY position
+30:33  previous clamped high-level command
+33:35  goal-centered world-frame robot XY position * 0.5
+35:37  world-frame robot XY linear velocity
+37:39  goal-centered world-frame cube XY position * 0.5
+39:41  base-frame cube XY velocity
+41:43  goal-centered world-frame goal XY position (zero)
 43:44  goal radius
-44:46  cube-to-goal XY vector
-46:48  left-front-foot-to-cube XY vector
+44:46  base-frame cube-to-goal XY vector * 0.5
+46:48  base-frame left-front-foot-to-cube XY vector
+48:52  foot forces, ordered [FL, FR, RL, RR], clamped to [0, 150] * 0.01
 ```
+
+All non-foot-force terms are clipped to `[-100, 100]` before scaling. The
+three policy outputs are clamped to `[0.6, 0.4, 0.8]` in absolute value, and
+that clamped command is both sent to locomotion and stored as the next
+`previous clamped high-level command` observation.
 
 The high-level PushCube policy output is 3 values:
 

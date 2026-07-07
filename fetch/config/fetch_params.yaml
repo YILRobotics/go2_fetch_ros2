@@ -107,9 +107,9 @@ cube_tracker_pcl_node:
     cluster_tolerance_m: 0.035
     # Smaller clusters are discarded immediately. Clusters between this and
     # cluster_min_points are retained only as possible leg-occluded fragments.
-    fragment_min_points: 20
+    fragment_min_points: 15
     # Minimum points required by either a normal cube cluster or merged fragments.
-    cluster_min_points: 55
+    cluster_min_points: 40
     cluster_max_points: 12000
     cube_dimensions: [0.16, 0.16, 0.16]
     # Reject candidates whose measured bounding extent is implausibly small/large.
@@ -118,11 +118,11 @@ cube_tracker_pcl_node:
     cube_dimension_max_m: 0.28
     # A normal or merged candidate must span at least this fraction of the known
     # cube width. This prevents a small visible corner from updating the filter.
-    merged_min_visible_fraction: 0.5
+    merged_min_visible_fraction: 0.4
     # Fragments can be merged only when their camera ranges differ by less than this.
-    fragment_depth_tolerance_m: 0.10
+    fragment_depth_tolerance_m: 0.15
     # Once initialized, reject clusters farther than this from the predicted XY.
-    association_gate_m: 0.35
+    association_gate_m: 0.60
 
     # --- Front-leg removal and occlusion merging ---
     # Frames are groups of [thigh, calf, foot], one group per leg. Capsules are
@@ -132,12 +132,16 @@ cube_tracker_pcl_node:
     leg_exclusion_radius_m: 0.065
     # Two fragments may be joined only if their connecting line passes this close
     # to a removed leg, indicating that the leg plausibly caused the split.
-    leg_merge_gap_radius_m: 0.11
+    leg_merge_gap_radius_m: 0.13
 
-    # --- Constant-velocity EKF and delayed YOLO replay ---
+    # --- Friction-damped velocity EKF and delayed YOLO replay ---
     # Standard deviation of unmodelled planar cube acceleration. Higher values
     # let the filter change velocity faster but produce a less smooth estimate.
-    process_accel_std_mps2: 1.0
+    process_accel_std_mps2: 1.5
+    # Friction-model time constant. Predicted velocity is multiplied by
+    # exp(-elapsed/tau), so 0.25 s leaves about 1.8% after one second. A larger
+    # value makes the cube coast longer; a smaller value stops it sooner.
+    velocity_decay_tau_s: 0.25
     # XY position variances in m^2. Lower values trust that source more strongly.
     pcl_measurement_variance_xy: 0.0064
     yolo_measurement_variance_xy: 0.0035
@@ -149,7 +153,7 @@ cube_tracker_pcl_node:
     # YOLO results older than this window are rejected.
     history_duration_s: 0.5
     # Publish cube_visible=false after neither source has passed its gates this long.
-    detection_timeout_s: 0.5
+    detection_timeout_s: 2.2
 
 
 high_level_policy_node:
@@ -172,7 +176,7 @@ high_level_policy_node:
     # --- Goal definition and completion condition ---
     goal_xy: [2.0, 0.0] # same as training
     # Included in the trained high-level policy observation.
-    goal_radius: 0.15
+    goal_radius: 0.2
     # Completion requires the cube to remain within this radius for the hold
     # time while the robot base is outside robot_goal_clear_radius.
     cube_goal_stop_radius: 0.15
@@ -180,7 +184,9 @@ high_level_policy_node:
     robot_goal_clear_radius: 0.3
 
     # --- Cube-loss recovery rotation ---
-    cube_state_timeout_s: 0.8
+    cube_state_timeout_s: 2.2
+    # Select the newest tracker state at or before now-65 ms, matching training.
+    cube_target_age_s: 0.065
     # Smoothly reduce the locomotion command after cube tracking becomes stale.
     cube_stale_stop_ramp_s: 1.0
     # Fixed normalized yaw command, limited by max_cmd yaw.
@@ -225,7 +231,7 @@ high_level_policy_node:
 
     # --- Policy models and inference rates ---
     high_level_policy_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/unitree_go2_pushcube_4l/2026-06-30_13-49-47_ff_5_1/policy.engine
-    high_level_rate_hz: 15.0
+    high_level_rate_hz: 15.384615
     high_level_num_obs: 52
 
     # --- Unitree Sport high-level control ---
@@ -242,9 +248,9 @@ high_level_policy_node:
     # Clamp offset-corrected raw readings to match the Isaac Lab observation.
     foot_force_clip_max: 150.0
     # Divisor used to normalize the four LowState foot-force readings.
-    foot_force_scale: 80.0
+    foot_force_scale: 100.0
     num_actions: 12
-    max_cmd: [0.6, 0.5, 0.8] ###
+    max_cmd: [0.6,0.4,0.8]
     # max_cmd: [1.0, 0.8, 1.0] ### max for hihg level
 
     # --- Joint-state fields used by the high-level observation ---
@@ -254,6 +260,8 @@ high_level_policy_node:
     high_level_command_log_period_s: 1.0
     plot_on_exit: false
     analysis_pdf_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/plots/analysis.png
+    # Empty disables the component-by-component 52-value diagnostic dump.
+    observation_csv_path: "" # "" to disable
 
 
 low_level_policy_node:
@@ -273,7 +281,7 @@ low_level_policy_node:
     dof_pos_scale: 1.0
     dof_vel_scale: 0.05
     action_scale: 0.25
-    max_cmd: [1.0, 1.0, 1.0]
+    max_cmd: [1.0, 1.0, 1.0] # for high level policy: [0.6,0.4,0.8]
     foot_force_offset: [4.0, 1.0, 5.0, 5.0]
     foot_force_clip_max: 150.0
     foot_force_scale: 75.0
