@@ -64,7 +64,7 @@ class PolicyObservationTest(unittest.TestCase):
         ]
         self.assertEqual(select_cube_state(states, 2.5).stamp_s, 2)
         self.assertEqual(select_cube_state(states, 10.0).stamp_s, 3)
-        self.assertEqual(select_cube_state(states, 0.5).stamp_s, 1)
+        self.assertIsNone(select_cube_state(states, 0.5))
 
 if __name__ == "__main__":
     unittest.main()

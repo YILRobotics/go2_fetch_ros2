@@ -51,11 +51,11 @@ def world_vector_to_base_xy(vector_world_xy, quaternion_world_from_base_wxyz) ->
 
 
 def select_cube_state(history, target_stamp_s: float) -> TimedCubeState | None:
-    """Return the newest state at/before the target, or the oldest startup state."""
+    """Return the newest state at/before the target, if one is available."""
     if not history:
         return None
     eligible = [state for state in history if state.stamp_s <= target_stamp_s]
-    return eligible[-1] if eligible else history[0]
+    return eligible[-1] if eligible else None
 
 
 def build_pushcube_observation(

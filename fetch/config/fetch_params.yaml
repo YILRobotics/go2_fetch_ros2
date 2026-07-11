@@ -26,7 +26,7 @@ cube_tracker_yolo_node:
     status_log_rate_hz: 2.0
     pipeline_log_rate_hz: 2.0
     enable_timing_log: true
-    timing_log_rate_hz: 5.0
+    timing_log_rate_hz: 2.0
     # Exit after a stuck native/TensorRT inference so launch can restart the process.
     inference_timeout_s: 5.0
     input_stall_warn_s: 2.0
