@@ -68,7 +68,7 @@ cube_tracker_yolo_node:
     cube_position_offset_xyz: [0.0, 0.0, 0.0]
 
     # --- Debug visualization ---
-    publish_debug_image: true
+    publish_debug_image: false
     publish_mask_image: false
 
 cube_tracker_pcl_node:
@@ -174,7 +174,7 @@ high_level_policy_node:
     joystick_command_scale: [1.0, 1.0, 1.0]
 
     # --- Goal definition and completion condition ---
-    goal_xy: [2.0, 0.0] # same as training
+    goal_xy: [1.5, 0.0] # same as training
     # Included in the trained high-level policy observation.
     goal_radius: 0.2
     # Completion requires the cube to remain within this radius for the hold
@@ -212,7 +212,7 @@ high_level_policy_node:
     sport_request_topic: /api/sport/request
     policy_world_frame: odom
     lf_foot_frame: FL_foot
-    lf_foot_tf_timeout_s: 0.06
+    lf_foot_tf_timeout_s: 0.02
     cube_state_tf_timeout_s: 0.05
     # nav_msgs/Odometry twist is normally expressed in child_frame_id.
     robot_twist_in_body_frame: true
@@ -248,7 +248,7 @@ high_level_policy_node:
     # Clamp offset-corrected raw readings to match the Isaac Lab observation.
     foot_force_clip_max: 150.0
     # Divisor used to normalize the four LowState foot-force readings.
-    foot_force_scale: 100.0
+    foot_force_scale: 80.0
     num_actions: 12
     max_cmd: [0.6,0.4,0.8]
     # max_cmd: [1.0, 0.8, 1.0] ### max for hihg level
@@ -257,7 +257,8 @@ high_level_policy_node:
     leg_joint2motor_idx: [3, 0, 9, 6, 4, 1, 10, 7, 5, 2, 11, 8]
     default_angles: [0.1, -0.1, 0.1, -0.1, 0.8, 0.8, 1.0, 1.0, -1.5, -1.5, -1.5, -1.5]
     # --- Diagnostics and analysis output ---
-    high_level_command_log_period_s: 1.0
+    high_level_command_log_period_s: 0.0
+    high_level_timing_warn_threshold_ms: 65.0
     plot_on_exit: false
     analysis_pdf_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/plots/analysis.png
     # Empty disables the component-by-component 52-value diagnostic dump.
@@ -284,7 +285,7 @@ low_level_policy_node:
     max_cmd: [1.0, 1.0, 1.0] # for high level policy: [0.6,0.4,0.8]
     foot_force_offset: [4.0, 1.0, 5.0, 5.0]
     foot_force_clip_max: 150.0
-    foot_force_scale: 75.0
+    foot_force_scale: 100.0
     leg_joint2motor_idx: [3, 0, 9, 6, 4, 1, 10, 7, 5, 2, 11, 8]
     default_angles: [0.1, -0.1, 0.1, -0.1, 0.8, 0.8, 1.0, 1.0, -1.5, -1.5, -1.5, -1.5]
     kps: [25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0]

@@ -156,13 +156,29 @@ ssh unitree@192.168.123.18 # password 123
 ssh unitree@192.168.11.8  # password 123
 ```
 
-copy policy model:
+Copy policy model:
 
 ```bash
 cd src/go2_fetch_ros2/fetch/models
 
 rsync -avzP ferdinand@192.168.11.2:/home/ferdinand/fetchrobot/ferdinand/go2_fetch_rl/logs/rsl_rl/unitree_go2_velocity_4l/2026-06-30_11-11-40_walk_ff_5/exported/policy.pt .
 ```
+
+## Check Jetson usage
+
+```bash
+sudo pip3 install jetson-stats
+jtop
+```
+Check current mode
+```bash
+sudo nvpmodel -q
+```
+Set to performance mode
+```bash
+sudo nvpmodel -m 2
+```
+
 
 ## ROS 2 Network Setup
 
@@ -411,6 +427,9 @@ ros2 bag record -e "(/go2_fetch/.*|/go2_odometry/filtered|/tf|/camera/depth/colo
 ros2 bag record -e "(/go2_fetch/.*|/go2_odometry.*|/tf|/robot_description|/tf_static|/lf/lowstate|/go2/camera/image_raw/compressed)" -x ".*compressedDepth."
 
 ros2 bag record -e "(/go2_fetch/.*|/go2_odometry.*|/tf|/robot_description|/tf_static|/lf/lowstate|/go2/camera/image_raw/compressed|/camera/depth/color/points|/camera/color/image_raw/compressed)" -x ".*compressedDepth."
+
+ros2 bag record -e "^(/go2_fetch/.*|/go2_odometry.*|/tf|/robot_description|/tf_static|/lf/lowstate|/camera/depth/color/points|/camera/color/
+image_raw/compressed)$" -x ".*compressedDepth.*"
 ```
 
 Now the cause is clear: rosbag’s default 100 MiB cache fills after about 7.3 seconds—exactly when cube

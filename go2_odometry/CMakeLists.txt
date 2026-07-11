@@ -9,6 +9,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclpy REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 find_package(unitree_go REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
@@ -25,8 +26,23 @@ unset(PYTHON_SOABI)
 add_executable(state_converter_node src/go2_state_converter_node.cpp)
 ament_target_dependencies(state_converter_node rclcpp unitree_go sensor_msgs)
 
+add_executable(inekf_odom src/inekf_odom_node.cpp)
+ament_target_dependencies(
+  inekf_odom
+  rclcpp
+  ament_index_cpp
+  unitree_go
+  geometry_msgs
+  nav_msgs
+  tf2_ros
+  inekf
+)
+target_link_libraries(inekf_odom pinocchio::pinocchio)
+target_link_libraries(inekf_odom inekf::inekf)
+
 install(TARGETS
   state_converter_node
+  inekf_odom
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -37,7 +53,7 @@ file(GLOB SCRIPTS_LIST scripts/*.py)
 install(PROGRAMS scripts/fake_odom.py  DESTINATION lib/${PROJECT_NAME} RENAME fake_odom.py)
 install(PROGRAMS scripts/dumb_odom.py  DESTINATION lib/${PROJECT_NAME} RENAME dumb_odom.py)
 install(PROGRAMS scripts/mocap_base_pose.py  DESTINATION lib/${PROJECT_NAME} RENAME mocap_base_pose.py)
-install(PROGRAMS scripts/inekf_odom.py  DESTINATION lib/${PROJECT_NAME} RENAME inekf_odom.py)
+install(PROGRAMS scripts/inekf_odom.py  DESTINATION lib/${PROJECT_NAME} RENAME inekf_odom_py)
 
 # Install launch files.
 install(DIRECTORY

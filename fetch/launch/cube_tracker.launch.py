@@ -161,7 +161,7 @@ def generate_launch_description() -> LaunchDescription:
             package="tf2_ros",
             executable="static_transform_publisher",
             output="screen" ,
-            arguments=["-0.1", "0.01", "-0.1", "0", "0.40", "0", "base", "camera_link"],
+            arguments=["-0.115", "0.01", "-0.1", "0", "0.40", "0", "base", "camera_link"],
             condition=UnlessCondition(use_dummy_publisher),
         )
 

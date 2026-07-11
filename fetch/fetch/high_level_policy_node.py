@@ -371,7 +371,8 @@ class HighLevelPolicyNode(Node):
         self.declare_parameter("foot_force_scale", 100.0)
 
         # Diagnostics and analysis output.
-        self.declare_parameter("high_level_command_log_period_s", 1.0)
+        self.declare_parameter("high_level_command_log_period_s", 0.0)
+        self.declare_parameter("high_level_timing_warn_threshold_ms", 65.0)
         self.declare_parameter("plot_on_exit", False)
         self.declare_parameter("analysis_pdf_path", "analyse_robot.png")
         self.declare_parameter("observation_csv_path", "")
@@ -546,6 +547,9 @@ class HighLevelPolicyNode(Node):
         self.high_level_obs = np.zeros(
             int(self.get_parameter("high_level_num_obs").value), dtype=np.float32
         )
+        self._last_high_level_step_timing_ms = {}
+        self._last_high_level_update_timing_ms = {}
+        self._last_observation_timing_ms = {}
         self.robot_pos_xy = np.zeros(2, dtype=np.float32)
         self.robot_lin_vel_world_xy = np.zeros(2, dtype=np.float32)
         self.robot_yaw = 0.0
@@ -1160,17 +1164,27 @@ class HighLevelPolicyNode(Node):
     def _update_high_level_command(
         self, ang_vel, gravity_orientation, qj_obs, dqj_obs
     ) -> None:
+        timing_start = time.perf_counter()
         now = time.monotonic()
         high_period = 1.0 / max(
             float(self.get_parameter("high_level_rate_hz").value), 1e-6
         )
+        observation_ms = 0.0
+        infer_ms = 0.0
+        inferred = False
         if now >= self._next_high_level_time:
+            observation_start = time.perf_counter()
             self.high_level_obs = self._build_high_level_observation(
                 ang_vel, gravity_orientation, qj_obs, dqj_obs
             )
+            observation_done = time.perf_counter()
             self.high_level_action = self.high_level_policy.infer(
                 self.high_level_obs
             )
+            infer_done = time.perf_counter()
+            observation_ms = (observation_done - observation_start) * 1000.0
+            infer_ms = (infer_done - observation_done) * 1000.0
+            inferred = True
             if self.high_level_action.size != 3:
                 raise RuntimeError(
                     f"High-level policy returned {self.high_level_action.size} actions; expected 3"
@@ -1188,6 +1202,16 @@ class HighLevelPolicyNode(Node):
         )
         self.previous_clamped_command[:] = self.cmd
         self._log_high_level_command(now)
+        timing_done = time.perf_counter()
+        self._last_high_level_update_timing_ms = {
+            "observation": observation_ms,
+            "infer": infer_ms,
+            "post": (timing_done - timing_start) * 1000.0
+            - observation_ms
+            - infer_ms,
+            "total": (timing_done - timing_start) * 1000.0,
+            "inferred": inferred,
+        }
 
     def _log_high_level_command(self, now: float | None = None) -> None:
         now = time.monotonic() if now is None else now
@@ -1470,6 +1494,7 @@ class HighLevelPolicyNode(Node):
     def _build_high_level_observation(
         self, ang_vel, gravity_orientation, qj_obs, dqj_obs
     ) -> np.ndarray:
+        timing_start = time.perf_counter()
         if self.fake_cube_observation_mode:
             self._apply_fake_cube_observation()
             cube_position = self.cube_pos_xy.copy()
@@ -1487,7 +1512,9 @@ class HighLevelPolicyNode(Node):
             cube_position = state.position_world_xy
             cube_velocity = state.velocity_world_xy
             cube_stamp_s = state.stamp_s
+        cube_done = time.perf_counter()
         lf_foot_xy = self._lookup_lf_foot_xy(cube_stamp_s)
+        foot_tf_done = time.perf_counter()
 
         obs = build_pushcube_observation(
             angular_velocity_base=ang_vel,
@@ -1504,14 +1531,21 @@ class HighLevelPolicyNode(Node):
             lf_foot_position_world_xy=lf_foot_xy,
             foot_force=self._corrected_foot_force(),
             foot_force_scale=float(self.get_parameter("foot_force_scale").value),
-            quaternion_world_from_base_wxyz=np.asarray(
-                self.low_state.imu_state.quaternion, dtype=np.float32
-            ),
+            quaternion_world_from_base_wxyz=self.robot_quaternion_world_from_base,
         )
         self._require_observation_size(
             obs, int(self.get_parameter("high_level_num_obs").value), "High-level"
         )
+        build_done = time.perf_counter()
         self._append_observation_csv(obs)
+        csv_done = time.perf_counter()
+        self._last_observation_timing_ms = {
+            "cube_state": (cube_done - timing_start) * 1000.0,
+            "foot_tf": (foot_tf_done - cube_done) * 1000.0,
+            "build_obs": (build_done - foot_tf_done) * 1000.0,
+            "csv": (csv_done - build_done) * 1000.0,
+            "total": (csv_done - timing_start) * 1000.0,
+        }
         return obs
 
     def _corrected_foot_force(self) -> np.ndarray:
@@ -1553,13 +1587,8 @@ class HighLevelPolicyNode(Node):
             seconds=float(self.get_parameter("lf_foot_tf_timeout_s").value)
         )
         try:
-            lookup_time = (
-                Time()
-                if stamp_s is None
-                else Time(nanoseconds=int(stamp_s * 1.0e9))
-            )
             transform = self.tf_buffer.lookup_transform(
-                world_frame, foot_frame, lookup_time, timeout=timeout
+                world_frame, foot_frame, Time(), timeout=timeout
             )
         except Exception as exc:
             raise RuntimeError(
@@ -1578,9 +1607,11 @@ class HighLevelPolicyNode(Node):
 
     def run_high_level_supervisor_step(self) -> None:
         """Compute and publish only the latency-insensitive command source."""
+        step_start = time.perf_counter()
         self.counter += 1
         self._update_high_level_toggle_from_remote()
         self._update_goal_from_remote()
+        remote_done = time.perf_counter()
         ang_vel = np.asarray(self.low_state.imu_state.gyroscope, dtype=np.float32)
         gravity_orientation = get_gravity_orientation(
             self.low_state.imu_state.quaternion
@@ -1590,6 +1621,7 @@ class HighLevelPolicyNode(Node):
             self.dqj[i] = self.low_state.motor_state[motor_idx].dq
         qj_obs = self.qj - np.asarray(self.config.default_angles, dtype=np.float32)
         dqj_obs = self.dqj
+        inputs_done = time.perf_counter()
 
         command_enabled = False
         if self.use_high_level_policy:
@@ -1601,6 +1633,7 @@ class HighLevelPolicyNode(Node):
                     ang_vel, gravity_orientation, qj_obs, dqj_obs
                 )
                 command_enabled = True
+        policy_done = time.perf_counter()
 
         self._update_cube_recovery_toggle_from_remote()
         if self._cube_recovery_active:
@@ -1621,10 +1654,50 @@ class HighLevelPolicyNode(Node):
                 # publish a valid zero velocity, so the policy keeps balancing.
                 self.cmd[:] = self._joystick_velocity_command()
             command_enabled = True
+        recovery_done = time.perf_counter()
 
         self._publish_high_level_command(command_enabled)
         self._publish_velocity_markers_if_due()
+        publish_done = time.perf_counter()
         self._record_policy_command_inputs(ang_vel)
+        step_done = time.perf_counter()
+        self._last_high_level_step_timing_ms = {
+            "remote": (remote_done - step_start) * 1000.0,
+            "inputs": (inputs_done - remote_done) * 1000.0,
+            "policy": (policy_done - inputs_done) * 1000.0,
+            "recovery": (recovery_done - policy_done) * 1000.0,
+            "publish": (publish_done - recovery_done) * 1000.0,
+            "record": (step_done - publish_done) * 1000.0,
+            "total": (step_done - step_start) * 1000.0,
+        }
+        self._warn_if_high_level_step_slow()
+
+    @staticmethod
+    def _format_timing_ms(timing: dict) -> str:
+        fields = []
+        for key, value in timing.items():
+            if isinstance(value, bool):
+                fields.append(f"{key}={value}")
+            elif isinstance(value, (float, int)):
+                fields.append(f"{key}={float(value):.2f}")
+        return " ".join(fields)
+
+    def _warn_if_high_level_step_slow(self) -> None:
+        threshold_ms = float(
+            self.get_parameter("high_level_timing_warn_threshold_ms").value
+        )
+        if threshold_ms <= 0.0:
+            return
+        step_total_ms = float(self._last_high_level_step_timing_ms.get("total", 0.0))
+        if step_total_ms < threshold_ms:
+            return
+        self.get_logger().warn(
+            "High-level slow step timing ms: "
+            f"step[{self._format_timing_ms(self._last_high_level_step_timing_ms)}] "
+            f"update[{self._format_timing_ms(self._last_high_level_update_timing_ms)}] "
+            f"obs[{self._format_timing_ms(self._last_observation_timing_ms)}] "
+            f"trt[{self._format_timing_ms(self.high_level_policy.last_timing_ms)}]"
+        )
 
     def _run_high_level_supervisor_sequence(self) -> None:
         if self.fake_observations_mode:

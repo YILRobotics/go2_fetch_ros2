@@ -35,27 +35,31 @@ def normalize_quaternion_wxyz(quaternion) -> np.ndarray:
 
 def world_vector_to_base_xy(vector_world_xy, quaternion_world_from_base_wxyz) -> np.ndarray:
     """Apply the inverse full-quaternion rotation and return its base-frame XY."""
+    rotation_world_to_base_xy = _world_to_base_xy_rotation(
+        quaternion_world_from_base_wxyz
+    )
+    vector_world_xy = np.asarray(vector_world_xy, dtype=np.float64)
+    return (rotation_world_to_base_xy @ vector_world_xy).astype(np.float32)
+
+
+def _world_to_base_xy_rotation(quaternion_world_from_base_wxyz) -> np.ndarray:
     qw, qx, qy, qz = normalize_quaternion_wxyz(quaternion_world_from_base_wxyz)
-    rotation_world_from_base = np.array(
+    # This is the XY block of R_world_from_base.T for vectors with z=0.
+    return np.array(
         [
-            [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)],
-            [2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)],
-            [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)],
+            [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy + qz * qw)],
+            [2 * (qx * qy - qz * qw), 1 - 2 * (qx * qx + qz * qz)],
         ],
         dtype=np.float64,
     )
-    vector_world = np.array(
-        [float(vector_world_xy[0]), float(vector_world_xy[1]), 0.0], dtype=np.float64
-    )
-    return (rotation_world_from_base.T @ vector_world)[:2].astype(np.float32)
 
 
 def select_cube_state(history, target_stamp_s: float) -> TimedCubeState | None:
     """Return the newest state at/before the target, if one is available."""
-    if not history:
-        return None
-    eligible = [state for state in history if state.stamp_s <= target_stamp_s]
-    return eligible[-1] if eligible else None
+    for state in reversed(history):
+        if state.stamp_s <= target_stamp_s:
+            return state
+    return None
 
 
 def build_pushcube_observation(
@@ -81,6 +85,18 @@ def build_pushcube_observation(
     cube_goal_frame_xy = np.asarray(cube_position_world_xy, dtype=np.float32) - goal_position_world_xy
     cube_to_goal_world = np.asarray(goal_position_world_xy, dtype=np.float32) - cube_position_world_xy
     foot_to_cube_world = np.asarray(cube_position_world_xy, dtype=np.float32) - lf_foot_position_world_xy
+    rotation_world_to_base_xy = _world_to_base_xy_rotation(
+        quaternion_world_from_base_wxyz
+    )
+    cube_velocity_base_xy = (
+        rotation_world_to_base_xy @ np.asarray(cube_velocity_world_xy, dtype=np.float64)
+    ).astype(np.float32)
+    cube_to_goal_base_xy = (
+        rotation_world_to_base_xy @ np.asarray(cube_to_goal_world, dtype=np.float64)
+    ).astype(np.float32)
+    foot_to_cube_base_xy = (
+        rotation_world_to_base_xy @ np.asarray(foot_to_cube_world, dtype=np.float64)
+    ).astype(np.float32)
 
     if foot_force_scale <= 0.0:
         raise ValueError("foot_force_scale must be greater than zero")
@@ -93,11 +109,11 @@ def build_pushcube_observation(
         np.clip(robot_goal_xy, -100.0, 100.0) * 0.5,
         np.clip(robot_velocity_world_xy, -100.0, 100.0),
         np.clip(cube_goal_frame_xy, -100.0, 100.0) * 0.5,
-        np.clip(world_vector_to_base_xy(cube_velocity_world_xy, quaternion_world_from_base_wxyz), -100.0, 100.0),
+        np.clip(cube_velocity_base_xy, -100.0, 100.0),
         np.zeros(2, dtype=np.float32),
         np.clip(np.array([goal_radius], dtype=np.float32), -100.0, 100.0),
-        np.clip(world_vector_to_base_xy(cube_to_goal_world, quaternion_world_from_base_wxyz), -100.0, 100.0) * 0.5,
-        np.clip(world_vector_to_base_xy(foot_to_cube_world, quaternion_world_from_base_wxyz), -100.0, 100.0),
+        np.clip(cube_to_goal_base_xy, -100.0, 100.0) * 0.5,
+        np.clip(foot_to_cube_base_xy, -100.0, 100.0),
         np.clip(foot_force, 0.0, 150.0) / float(foot_force_scale),
     ]
     observation = np.concatenate(terms).astype(np.float32)

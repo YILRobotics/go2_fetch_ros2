@@ -103,7 +103,7 @@ v_base_3d = inverse(q_world_from_base) * [v_world_x, v_world_y, 0]
 observation_xy = [v_base_3d.x, v_base_3d.y]
 ```
 
-Use the robot orientation at the same sample time as the perception data. For exact simulation parity, use the full IMU orientation, including roll and pitch, not only yaw. Confirm the quaternion component order in the real-robot library before applying the transform.
+Use the robot orientation at the same sample time as the perception data. For exact simulation parity, use the full orientation, including roll and pitch, not only yaw. In the ROS runtime, cube, goal, robot, and front-left-foot positions are expressed in the policy world frame (`odom`), so the base-frame terms must use the frame-consistent odometry quaternion (`odom_from_base`, stored as `robot_quaternion_world_from_base`) rather than the raw Unitree IMU quaternion. Confirm the quaternion component order in the real-robot library before applying the transform.
 
 All world quantities must use one consistent right-handed map frame. Define a fixed map origin and express robot, cube, front-left foot, and goal in it. To reproduce training exactly, place the goal at map `(0, 0)`. If the real localization system uses another origin, subtract the goal/map-origin offset consistently from `robot_pos_xy`, `cube_pos_xy`, and `goal_pos_xy`; relative vectors are translation invariant.
 
@@ -138,6 +138,8 @@ Apply clipping first and scaling second, matching Isaac Lab and the repository's
 - `foot_force = clamp(force, 0, 150) * 0.01`;
 - all other listed terms use scale `1.0`;
 - all non-foot-force terms have the broad clip `[-100, 100]` before scaling.
+
+The deployed low-level locomotion policy `2026-06-30_11-11-40_walk_ff_5` uses the same `0.01` foot-force scale in its exported deploy YAML. In ROS config, that means both high-level and low-level `foot_force_scale` values should be `100.0`.
 
 Do not reorder joints or feet based on names at runtime unless the resulting order exactly matches the training vector. The exported joint SDK mapping is `[3, 0, 9, 6, 4, 1, 10, 7, 5, 2, 11, 8]`; the real code must apply the model's accompanying mapping exactly. Verify the four hardware foot-force indices against the simulation body order rather than assuming that Unitree SDK order and Isaac body order are identical.
 

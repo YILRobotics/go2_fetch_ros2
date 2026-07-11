@@ -14,6 +14,7 @@
   <depend>std_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>rclcpp</depend>
+  <depend>ament_index_cpp</depend>
   <depend>unitree_go</depend>
   <depend>builtin_interfaces</depend>
   <depend>inekf</depend>
