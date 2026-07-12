@@ -1,11 +1,11 @@
-#include "fetch_low_level/motor_crc.hpp"
+#include "fetch_policy/motor_crc.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
 
-namespace fetch_low_level {
+namespace fetch_policy {
 namespace {
 // Explicit wire-layout mirrors the Unitree DDS LowCmd representation. ROS
 // message classes are not guaranteed to have a contiguous wire-compatible

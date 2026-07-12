@@ -1,4 +1,4 @@
-#include "fetch_low_level/motor_crc.hpp"
+#include "fetch_policy/motor_crc.hpp"
 
 #include <NvInfer.h>
 #include <cuda_runtime_api.h>
@@ -28,7 +28,7 @@
 
 using namespace std::chrono_literals;
 
-namespace fetch_low_level {
+namespace fetch_policy {
 namespace {
 constexpr size_t kJoints = 12;
 constexpr size_t kObservationSize = 49;
@@ -905,7 +905,7 @@ int main(int argc, char **argv)
   rclcpp::init(argc, argv);
   try
   {
-    auto node = std::make_shared<fetch_low_level::LowLevelPolicyNode>();
+    auto node = std::make_shared<fetch_policy::LowLevelPolicyNode>();
     rclcpp::spin(node);
   }
   catch (const std::exception &error)

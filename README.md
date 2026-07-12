@@ -215,16 +215,58 @@ echo "$CYCLONEDDS_URI"  # should print empty line
 
 ## TensorRT Policy Engines
 
-### Make Engine File from .onnx file example
-
 ```bash
 cd /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/unitree_go2_velocity_4l/2026-04-05_12-01-56_walk_2
+```
 
+### Make Engine File from .onnx file on Jetson
+
+```bash
 /usr/src/tensorrt/bin/trtexec \
   --onnx=policy.onnx \
   --saveEngine=policy.engine \
   --fp16
 ```
+
+### Make Engine File from .onnx file on PC
+The pip packages don’t include the standalone trtexec program. Your separate
+  ~/unitree/TensorRT/include directory supplies the headers only. NVIDIA recommends a Debian/RPM
+  package, tar distribution, or container for C++ tools such as trtexec. NVIDIA installation
+  guide
+  (https://docs.nvidia.com/deeplearning/tensorrt/latest/installing-tensorrt/installing.html)
+
+  For your current TensorRT 10 setup, the least disruptive option is to download the matching
+  TensorRT 10 Linux x86-64 tar archive. After extracting it under ~/unitree/TensorRT, its layout
+  should include:
+
+  TensorRT/
+  ├── bin/trtexec
+  ├── include/
+  └── lib/
+
+  Then run:
+
+  ~/unitree/TensorRT/bin/trtexec \
+    --onnx=policy.onnx \
+    --saveEngine=policy.engine \
+    --fp16
+
+  If the extracted archive created a versioned subdirectory, locate it with:
+
+  find ~/unitree/TensorRT -type f -name trtexec
+
+  Then use the path returned. If its libraries are not resolved automatically:
+
+  LD_LIBRARY_PATH="$HOME/unitree/TensorRT/lib:$CONDA_PREFIX/lib/python3.10/site-packages/
+  tensorrt_libs:$LD_LIBRARY_PATH" \
+    "$HOME/unitree/TensorRT/bin/trtexec" \
+    --onnx=policy.onnx \
+    --saveEngine=policy.engine \
+    --fp16
+
+  Make sure the downloaded trtexec major version is TensorRT 10, matching libnvinfer.so.10. Don’t
+  download the current TensorRT 11 executable and combine it with your TensorRT 10 libraries.
+
 
 
 A TensorRT .engine is a serialized optimized execution plan. TensorRT does not provide the same one-line model interface,

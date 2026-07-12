@@ -43,7 +43,7 @@
 
 using namespace std::chrono_literals;
 
-namespace fetch_low_level {
+namespace fetch_policy {
 namespace {
 
 using SteadyClock = std::chrono::steady_clock;
@@ -1708,13 +1708,13 @@ private:
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr parameter_callback_;
 };
 
-}  // namespace fetch_low_level
+}  // namespace fetch_policy
 
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
   try {
-    rclcpp::spin(std::make_shared<fetch_low_level::HighLevelPolicyNode>());
+    rclcpp::spin(std::make_shared<fetch_policy::HighLevelPolicyNode>());
   } catch (const std::exception & error) {
     std::fprintf(stderr, "high_level_policy_node_cpp: %s\n", error.what());
     rclcpp::shutdown();

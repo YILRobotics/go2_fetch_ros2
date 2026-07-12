@@ -1,21 +1,21 @@
 <?xml version="1.0"?>
 <package format="3">
-  <name>fetch_low_level</name>
+  <name>fetch_policy</name>
   <version>0.1.0</version>
-  <description>Deterministic low-level policy and motor control for Unitree Go2.</description>
+  <description>Optimized C++ high- and low-level policies for the Unitree Go2 fetch task.</description>
   <maintainer email="ferdinand@todo.todo">ferdinand</maintainer>
   <license>Apache-2.0</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
-  <depend>rclcpp</depend>
-  <depend>rcl_interfaces</depend>
+  <depend>fetch_interfaces</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
+  <depend>rcl_interfaces</depend>
+  <depend>rclcpp</depend>
   <depend>std_msgs</depend>
   <depend>tf2</depend>
   <depend>tf2_ros</depend>
-  <depend>unitree_go</depend>
   <depend>unitree_api</depend>
+  <depend>unitree_go</depend>
   <depend>visualization_msgs</depend>
-  <depend>fetch_interfaces</depend>
   <export><build_type>ament_cmake</build_type></export>
 </package>

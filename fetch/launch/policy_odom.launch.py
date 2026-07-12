@@ -28,7 +28,7 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     low_level_policy_node = Node(
-        package='fetch_low_level',
+        package='fetch_policy',
         executable='low_level_policy_node',
         name='low_level_policy_node',
         output='screen',
@@ -37,7 +37,7 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     high_level_policy_node = Node(
-        package='fetch_low_level',
+        package='fetch_policy',
         executable='high_level_policy_node_cpp',
         name='high_level_policy_node',
         output='screen',

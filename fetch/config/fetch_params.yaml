@@ -195,12 +195,12 @@ high_level_policy_node:
     cube_recovery_max_rotation_deg: 360.0
 
     # --- Fake observation modes ---
-    fake_observations_mode: false
+    fake_observations_mode: true
     fake_observation_seed: 0
     fake_observation_min: -1.0
     fake_observation_max: 1.0
     fake_log_every_n_steps: 100
-    fake_cube_observation_mode: false
+    fake_cube_observation_mode: true
     fake_cube_position_xy: [0.3, 0.0]
     fake_cube_velocity_xy: [0.0, 0.0]
     fake_cube_publish_period_s: 0.05
