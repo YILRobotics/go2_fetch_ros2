@@ -11,7 +11,7 @@ Panels:
         - /Cube Detection HSL Fitler1/Topic1
         - /Pose_wC Cube PCL1/Covariance1/Position1
       Splitter Ratio: 0.6235294342041016
-    Tree Height: 810
+    Tree Height: 625
   - Class: rviz_common/Selection
     Name: Selection
   - Class: rviz_common/Tool Properties
@@ -29,7 +29,7 @@ Panels:
     Experimental: false
     Name: Time
     SyncMode: 0
-    SyncSource: Realsense PCL
+    SyncSource: PointCloud2 Cube PCL
   - Class: rviz_common/Views
     Expanded:
       - /Current View1
@@ -57,19 +57,149 @@ Visualization Manager:
       Reference Frame: <Fixed Frame>
       Value: true
     - Class: rviz_default_plugins/TF
-      Enabled: false
+      Enabled: true
       Frame Timeout: 15
       Frames:
         All Enabled: false
+        FL_calf:
+          Value: true
+        FL_calf_rotor:
+          Value: true
+        FL_foot:
+          Value: true
+        FL_hip:
+          Value: true
+        FL_hip_rotor:
+          Value: true
+        FL_thigh:
+          Value: true
+        FL_thigh_rotor:
+          Value: true
+        FR_calf:
+          Value: true
+        FR_calf_rotor:
+          Value: true
+        FR_foot:
+          Value: true
+        FR_hip:
+          Value: true
+        FR_hip_rotor:
+          Value: true
+        FR_thigh:
+          Value: true
+        FR_thigh_rotor:
+          Value: true
+        RL_calf:
+          Value: true
+        RL_calf_rotor:
+          Value: true
+        RL_foot:
+          Value: true
+        RL_hip:
+          Value: true
+        RL_hip_rotor:
+          Value: true
+        RL_thigh:
+          Value: true
+        RL_thigh_rotor:
+          Value: true
+        RR_calf:
+          Value: true
+        RR_calf_rotor:
+          Value: true
+        RR_foot:
+          Value: true
+        RR_hip:
+          Value: true
+        RR_hip_rotor:
+          Value: true
+        RR_thigh:
+          Value: true
+        RR_thigh_rotor:
+          Value: true
+        base:
+          Value: true
+        camera_color_frame:
+          Value: true
+        camera_color_optical_frame:
+          Value: true
+        camera_depth_frame:
+          Value: true
+        camera_depth_optical_frame:
+          Value: true
+        camera_link:
+          Value: true
+        imu:
+          Value: true
+        odom:
+          Value: true
+        radar:
+          Value: true
       Marker Scale: 0.10000000149011612
       Name: TF
       Show Arrows: true
       Show Axes: true
       Show Names: true
       Tree:
-        {}
+        odom:
+          base:
+            FL_hip:
+              FL_thigh:
+                FL_calf:
+                  FL_foot:
+                    {}
+                FL_calf_rotor:
+                  {}
+              FL_thigh_rotor:
+                {}
+            FL_hip_rotor:
+              {}
+            FR_hip:
+              FR_thigh:
+                FR_calf:
+                  FR_foot:
+                    {}
+                FR_calf_rotor:
+                  {}
+              FR_thigh_rotor:
+                {}
+            FR_hip_rotor:
+              {}
+            RL_hip:
+              RL_thigh:
+                RL_calf:
+                  RL_foot:
+                    {}
+                RL_calf_rotor:
+                  {}
+              RL_thigh_rotor:
+                {}
+            RL_hip_rotor:
+              {}
+            RR_hip:
+              RR_thigh:
+                RR_calf:
+                  RR_foot:
+                    {}
+                RR_calf_rotor:
+                  {}
+              RR_thigh_rotor:
+                {}
+            RR_hip_rotor:
+              {}
+            camera_link:
+              camera_color_frame:
+                camera_color_optical_frame:
+                  {}
+              camera_depth_frame:
+                camera_depth_optical_frame:
+                  {}
+            imu:
+              {}
+            radar:
+              {}
       Update Interval: 0
-      Value: false
+      Value: true
     - Alpha: 1
       Class: rviz_default_plugins/RobotModel
       Collision Enabled: false
@@ -299,7 +429,7 @@ Visualization Manager:
         Reliability Policy: Best Effort
         Value: /camera/color/image_raw/compressed
       Value: true
-    - Alpha: 0.800000011920929
+    - Alpha: 0.6000000238418579
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
         Max Value: 1.5
@@ -320,7 +450,7 @@ Visualization Manager:
       Name: Realsense PCL
       Position Transformer: XYZ
       Selectable: true
-      Size (Pixels): 8
+      Size (Pixels): 5
       Size (m): 0.003000000026077032
       Style: Points
       Topic:
@@ -345,7 +475,7 @@ Visualization Manager:
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Best Effort
-        Value: /go2_fetch/cube_debug_image
+        Value: /go2_fetch/cube_debug_image/compressed
       Value: false
     - Class: rviz_default_plugins/Image
       Enabled: false
@@ -431,7 +561,7 @@ Visualization Manager:
       Enabled: true
       Name: cmd_vel_marker
       Namespaces:
-        {}
+        command_velocity: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -444,7 +574,7 @@ Visualization Manager:
       Enabled: true
       Name: vel_marker
       Namespaces:
-        {}
+        current_velocity: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -610,6 +740,19 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /go2_odometry/filtered
       Value: false
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Name: Goal Marker
+      Namespaces:
+        goal_region: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /go2_fetch/goal_marker
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -656,25 +799,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/ThirdPersonFollower
-      Distance: 0.2841876447200775
+      Distance: 2.409679651260376
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.032520998269319534
-        Y: -0.01156499981880188
-        Z: -0.10000000149011612
+        X: 0.9159231781959534
+        Y: 0.36035066843032837
+        Z: -0.22638355195522308
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.1900000125169754
+      Pitch: 0.35499903559684753
       Target Frame: camera_link
       Value: ThirdPersonFollower (rviz_default_plugins)
-      Yaw: 3.1131627559661865
+      Yaw: 1.567177653312683
     Saved: ~
 Window Geometry:
   Cube Detection Debug:
@@ -687,10 +830,10 @@ Window Geometry:
     collapsed: false
   Go2 Camera:
     collapsed: false
-  Height: 1389
+  Height: 1116
   Hide Left Dock: false
   Hide Right Dock: false
-  QMainWindow State: 000000ff00000000fd000000030000000000000156000004cffc0200000014fb0000001200530065006c0065006300740069006f006e000000003d000000820000005c00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007302000001ed000001df00000185000000a3fb000000120056006900650077007300200054006f006f02000001df000002110000018500000122fb000000200054006f006f006c002000500072006f0070006500720074006900650073003203000002880000011d000002210000017afb000000100044006900730070006c006100790073010000003d00000367000000c900fffffffb0000001a005200650061006c00730065006e00730065002000520047004201000003aa000001620000002800fffffffb00000032004300750062006500200044006500740065006300740069006f006e002000480053004c0020004600690074006c006500720000000382000000530000002800fffffffb0000002000730065006c0065006300740069006f006e00200062007500660066006500720200000138000000aa0000023a00000294fb00000014005700690064006500530074006500720065006f02000000e6000000d2000003ee0000030bfb0000000c004b0069006e0065006300740200000186000001060000030c00000261fb000000480043006f0072006500730065006e0073006500200049006e0073007400720075006d0065006e0074006100740069006f006e0020005200760069007a002000500061006e0065006c01000002de000000b50000000000000000fb0000001e0043006f0072006500730065006e00730065005f00500061006e0065006c0100000176000001180000000000000000fb00000028004300750062006500200044006500740065006300740069006f006e002000440065006200750067000000036c0000006b0000002800fffffffb0000001e005200650061006c00730065006e0073006500200044006500700074006800000003100000002e0000002800fffffffb0000001a005200650061006c00730065006e007300650020005200470042010000020c000000c10000000000000000fb0000001e005200650061006c00730065006e0073006500200044006500700074006801000002d3000000c20000000000000000fb00000026004300750062006500200044006500740065006300740069006f006e0020004d00610073006b0000000398000000790000002800fffffffb0000000a0049006d00610067006501000002cf000000c60000000000000000fb000000140047006f0032002000430061006d006500720061000000031f000000e40000002800fffffffb0000000c00430061006d00650072006101000004ac000000da0000000000000000000000010000015d000004cffc0200000005fb0000000a00560069006500770073010000003d000004cf000000a400fffffffb0000003e0043006f0072006500730065006e0073006500200049006e0073007400720075006d0065006e0074006100740069006f006e002000500061006e0065006c000000003d0000037c0000000000000000fb0000001e0054006f006f006c002000500072006f00700065007200740069006500730100000041000000780000000000000000fb0000000a00560069006500770073000000003d00000251000000a400fffffffb0000001200530065006c0065006300740069006f006e010000025a000000b2000000000000000000000003000009020000003efc0100000002fb0000000800540069006d0065010000000000000902000002fb00fffffffb0000000800540069006d0065010000000000000450000000000000000000000643000004cf00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd000000030000000000000156000003c2fc0200000014fb0000001200530065006c0065006300740069006f006e000000003d000000820000005c00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007302000001ed000001df00000185000000a3fb000000120056006900650077007300200054006f006f02000001df000002110000018500000122fb000000200054006f006f006c002000500072006f0070006500720074006900650073003203000002880000011d000002210000017afb000000100044006900730070006c006100790073010000003b000002ac000000c700fffffffb0000001a005200650061006c00730065006e00730065002000520047004201000002ed000001100000002800fffffffb00000032004300750062006500200044006500740065006300740069006f006e002000480053004c0020004600690074006c006500720000000382000000530000002800fffffffb0000002000730065006c0065006300740069006f006e00200062007500660066006500720200000138000000aa0000023a00000294fb00000014005700690064006500530074006500720065006f02000000e6000000d2000003ee0000030bfb0000000c004b0069006e0065006300740200000186000001060000030c00000261fb000000480043006f0072006500730065006e0073006500200049006e0073007400720075006d0065006e0074006100740069006f006e0020005200760069007a002000500061006e0065006c01000002de000000b50000000000000000fb0000001e0043006f0072006500730065006e00730065005f00500061006e0065006c0100000176000001180000000000000000fb00000028004300750062006500200044006500740065006300740069006f006e0020004400650062007500670000000313000000ea0000002800fffffffb0000001e005200650061006c00730065006e0073006500200044006500700074006800000003100000002e0000002800fffffffb0000001a005200650061006c00730065006e007300650020005200470042010000020c000000c10000000000000000fb0000001e005200650061006c00730065006e0073006500200044006500700074006801000002d3000000c20000000000000000fb00000026004300750062006500200044006500740065006300740069006f006e0020004d00610073006b0000000398000000790000002800fffffffb0000000a0049006d00610067006501000002cf000000c60000000000000000fb000000140047006f0032002000430061006d006500720061000000031f000000e40000002800fffffffb0000000c00430061006d00650072006101000004ac000000da00000000000000000000000100000100000003c2fc0200000005fb0000000a00560069006500770073010000003b000003c2000000a000fffffffb0000003e0043006f0072006500730065006e0073006500200049006e0073007400720075006d0065006e0074006100740069006f006e002000500061006e0065006c000000003d0000037c0000000000000000fb0000001e0054006f006f006c002000500072006f00700065007200740069006500730100000041000000780000000000000000fb0000000a00560069006500770073000000003d00000251000000a000fffffffb0000001200530065006c0065006300740069006f006e010000025a000000b2000000000000000000000003000007790000003efc0100000002fb0000000800540069006d00650100000000000007790000025300fffffffb0000000800540069006d0065010000000000000450000000000000000000000517000003c200000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   Realsense Depth:
     collapsed: false
   Realsense RGB:
@@ -703,6 +846,6 @@ Window Geometry:
     collapsed: false
   Views:
     collapsed: false
-  Width: 2306
-  X: 0
-  Y: 0
+  Width: 1913
+  X: 70
+  Y: 50

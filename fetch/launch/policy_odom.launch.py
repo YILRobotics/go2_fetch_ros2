@@ -37,8 +37,8 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     high_level_policy_node = Node(
-        package='fetch',
-        executable='high_level_policy_node',
+        package='fetch_low_level',
+        executable='high_level_policy_node_cpp',
         name='high_level_policy_node',
         output='screen',
         emulate_tty=True,

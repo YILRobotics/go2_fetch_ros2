@@ -47,8 +47,8 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     high_level_policy = Node(
-        package='fetch',
-        executable='high_level_policy_node',
+        package='fetch_low_level',
+        executable='high_level_policy_node_cpp',
         name='high_level_policy_node',
         output='screen',
         parameters=[params_file, {'control_mode': control_mode}],

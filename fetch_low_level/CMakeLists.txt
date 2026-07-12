@@ -15,8 +15,13 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rcl_interfaces REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
 find_package(unitree_go REQUIRED)
+find_package(unitree_api REQUIRED)
+find_package(visualization_msgs REQUIRED)
 find_package(fetch_interfaces REQUIRED)
 find_path(TENSORRT_INCLUDE_DIR NvInfer.h
   HINTS /usr/include /usr/local/include /usr/include/x86_64-linux-gnu
@@ -67,5 +72,16 @@ target_link_libraries(low_level_policy_node
 ament_target_dependencies(low_level_policy_node
   rclcpp rcl_interfaces geometry_msgs std_msgs unitree_go fetch_interfaces)
 
-install(TARGETS low_level_policy_node DESTINATION lib/${PROJECT_NAME})
+add_executable(high_level_policy_node_cpp
+  src/high_level_policy_node.cpp)
+target_include_directories(high_level_policy_node_cpp SYSTEM PRIVATE
+  ${TENSORRT_INCLUDE_DIR} ${CUDA_RUNTIME_INCLUDE_DIR})
+target_link_libraries(high_level_policy_node_cpp
+  ${TENSORRT_LIBRARY} ${CUDA_RUNTIME_LIBRARY})
+ament_target_dependencies(high_level_policy_node_cpp
+  rclcpp rcl_interfaces geometry_msgs nav_msgs std_msgs tf2 tf2_ros
+  unitree_go unitree_api visualization_msgs fetch_interfaces)
+
+install(TARGETS low_level_policy_node high_level_policy_node_cpp
+  DESTINATION lib/${PROJECT_NAME})
 ament_package()
