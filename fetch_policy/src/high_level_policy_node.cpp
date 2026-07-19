@@ -1561,12 +1561,17 @@ private:
     publish_command_marker();
     publish_velocity_marker(current_marker_publisher_, "current_velocity",
       robot.base_velocity[0], robot.base_velocity[1], 1.0F, 0.45F, 0.0F);
+    publish_angular_velocity_marker(current_marker_publisher_, "current_velocity",
+      robot.base_velocity[0], robot.base_velocity[1], robot.base_velocity[3],
+      1.0F, 0.45F, 0.0F);
   }
 
   void publish_command_marker()
   {
     publish_velocity_marker(command_marker_publisher_, "command_velocity",
       command_[0], command_[1], 0.0F, 0.7F, 1.0F);
+    publish_angular_velocity_marker(command_marker_publisher_, "command_velocity",
+      command_[0], command_[1], command_[2], 0.0F, 0.7F, 1.0F);
   }
 
   void publish_velocity_marker(
@@ -1593,6 +1598,46 @@ private:
     end.x = x * scale;
     end.y = y * scale;
     end.z = z;
+    marker.points = {origin, end};
+    marker.scale.x = 0.035;
+    marker.scale.y = 0.09;
+    marker.scale.z = 0.12;
+    marker.color.r = red;
+    marker.color.g = green;
+    marker.color.b = blue;
+    marker.color.a = 0.9F;
+    marker.lifetime = rclcpp::Duration::from_seconds(0.25);
+    publisher->publish(marker);
+  }
+
+  // Draw yaw-rate magnitude vertically from the tip of the matching planar
+  // velocity arrow. The arrow always points upward; its length is proportional
+  // to |angular.z| in the same way the planar arrow length follows linear speed.
+  void publish_angular_velocity_marker(
+    const rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr & publisher,
+    const std::string & name, float x, float y, float yaw_rate,
+    float red, float green, float blue)
+  {
+    visualization_msgs::msg::Marker marker;
+    marker.header.stamp = now();
+    marker.header.frame_id = get_parameter("command_velocity_marker_frame").as_string();
+    marker.ns = name;
+    marker.id = 1;
+    if (std::abs(yaw_rate) < 1.0e-3F) {
+      marker.action = visualization_msgs::msg::Marker::DELETE;
+      publisher->publish(marker);
+      return;
+    }
+    const double z = get_parameter("command_velocity_marker_z_offset").as_double();
+    const double scale = get_parameter("command_velocity_marker_scale").as_double();
+    marker.type = visualization_msgs::msg::Marker::ARROW;
+    marker.action = visualization_msgs::msg::Marker::ADD;
+    geometry_msgs::msg::Point origin;
+    origin.x = x * scale;
+    origin.y = y * scale;
+    origin.z = z;
+    geometry_msgs::msg::Point end = origin;
+    end.z += std::abs(yaw_rate) * scale;
     marker.points = {origin, end};
     marker.scale.x = 0.035;
     marker.scale.y = 0.09;
