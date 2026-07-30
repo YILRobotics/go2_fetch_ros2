@@ -183,6 +183,7 @@ private:
     declare_parameter("yolo_innovation_gate", 13.82);
     declare_parameter("history_duration_s", 0.5);
     declare_parameter("detection_timeout_s", 2.2);
+    declare_parameter("surface_to_center_offset_m", 0.08);
   }
 
   void read_parameters()
@@ -231,6 +232,7 @@ private:
     yolo_gate_ = get_parameter("yolo_innovation_gate").as_double();
     history_duration_ = get_parameter("history_duration_s").as_double();
     detection_timeout_ = get_parameter("detection_timeout_s").as_double();
+    surface_to_center_offset_ = get_parameter("surface_to_center_offset_m").as_double();
   }
 
   std::optional<Eigen::Vector3d> frame_origin(
@@ -353,7 +355,7 @@ private:
     return no_robot;
   }
 
-  Candidate make_candidate(const Cloud::Ptr & cloud, bool merged = false) const
+  Candidate make_candidate(const Cloud::Ptr & cloud, const Eigen::Vector3d & camera_origin, bool merged = false) const
   {
     Candidate candidate;
     candidate.cloud = cloud;
@@ -372,6 +374,11 @@ private:
       return static_cast<double>(*middle);
     };
     candidate.center = Eigen::Vector3d(median(xs), median(ys), median(zs));
+    // 2. Push center inward along the camera line-of-sight ray
+    const Eigen::Vector3d ray = candidate.center - camera_origin;
+    if (ray.squaredNorm() > 1e-6) {
+      candidate.center += ray.normalized() * surface_to_center_offset_;
+    }
     return candidate;
   }
 
@@ -417,7 +424,7 @@ private:
     for (const auto & index : indices) {
       Cloud::Ptr fragment(new Cloud);
       pcl::copyPointCloud(*cloud, index.indices, *fragment);
-      fragments.push_back(make_candidate(fragment));
+      fragments.push_back(make_candidate(fragment, camera_origin));
     }
 
     std::vector<Candidate> output;
@@ -439,7 +446,7 @@ private:
           !gap_explained_by_leg(fragments[i], fragments[j], segments)) {continue;}
         Cloud::Ptr merged(new Cloud(*fragments[i].cloud));
         *merged += *fragments[j].cloud;
-        Candidate candidate = make_candidate(merged, true);
+        Candidate candidate = make_candidate(merged, camera_origin, true);
         const Eigen::Vector3d extent = candidate.max - candidate.min;
         const double visible_fraction = std::max(extent.x(), extent.y()) /
           std::max(cube_dimensions_.x(), cube_dimensions_.y());
@@ -485,6 +492,12 @@ private:
 
   void cloud_callback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr message)
   {
+    // only process if visible which will come from yolo
+    const auto now = std::chrono::steady_clock::now();
+    const bool visible = initialized_ && last_observation_wall_.time_since_epoch().count() != 0 &&
+      std::chrono::duration<double>(now - last_observation_wall_).count() <= detection_timeout_;
+    if (!visible) {return;}
+
     ++clouds_received_total_;
     ++clouds_received_window_;
     const double time = stamp_seconds(message->header.stamp);
@@ -525,7 +538,7 @@ private:
       time, selected->center.head<2>(), pcl_variance_, pcl_gate_, Source::Pcl};
     if (insert_measurement(measurement)) {
       ++pcl_updates_accepted_;
-      last_observation_wall_ = std::chrono::steady_clock::now();
+      // last_observation_wall_ = std::chrono::steady_clock::now();
       publish_state(latest_sensor_time_);
     } else {
       ++pcl_updates_rejected_;
@@ -765,7 +778,7 @@ private:
     marker.pose = state.pose.pose; marker.pose.position.z = cube_dimensions_.z() * 0.5;
     marker.scale.x = cube_dimensions_.x(); marker.scale.y = cube_dimensions_.y();
     marker.scale.z = cube_dimensions_.z();
-    marker.color.r = 1.0F; marker.color.g = 1.0F; marker.color.b = 0.2F; marker.color.a = 0.75F;
+    marker.color.r = 1.0F; marker.color.g = 1.0F; marker.color.b = 0.2F; marker.color.a = 0.5F;
     marker_pub_->publish(marker);
   }
 
@@ -810,6 +823,8 @@ private:
   double process_accel_std_{1.5}, velocity_decay_tau_{0.25};
   double pcl_variance_{0.0064}, yolo_variance_{0.0025};
   double pcl_gate_{9.21}, yolo_gate_{13.82}, history_duration_{0.5}, detection_timeout_{2.2};
+
+  double surface_to_center_offset_{0.08};
 
   tf2_ros::Buffer tf_buffer_;
   tf2_ros::TransformListener tf_listener_;

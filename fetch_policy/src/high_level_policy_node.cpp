@@ -661,8 +661,8 @@ private:
     if (!source_frame.empty() && source_frame != target_frame) {
       try {
         const auto transform = tf_buffer_->lookupTransform(
-          target_frame, source_frame, rclcpp::Time(message.header.stamp),
-          rclcpp::Duration::from_seconds(get_parameter("cube_state_tf_timeout_s").as_double()));
+          target_frame, source_frame, rclcpp::Time(message.header.stamp));
+          // rclcpp::Duration::from_seconds(get_parameter("cube_state_tf_timeout_s").as_double()));
         const auto & rotation = transform.transform.rotation;
         const double yaw = std::atan2(
           2.0 * (rotation.w * rotation.z + rotation.x * rotation.y),
@@ -1158,8 +1158,8 @@ private:
     try {
       const auto transform = tf_buffer_->lookupTransform(
         get_parameter("policy_world_frame").as_string(),
-        get_parameter("lf_foot_frame").as_string(), tf2::TimePointZero,
-        tf2::durationFromSec(get_parameter("lf_foot_tf_timeout_s").as_double()));
+        get_parameter("lf_foot_frame").as_string(), tf2::TimePointZero);
+        // tf2::durationFromSec(get_parameter("lf_foot_tf_timeout_s").as_double()));
       return {static_cast<float>(transform.transform.translation.x),
         static_cast<float>(transform.transform.translation.y)};
     } catch (const std::exception & error) {
@@ -1419,18 +1419,15 @@ private:
           std::lock_guard<std::mutex> lock(data_mutex_);
           last = last_cube_state_time_;
         }
-        if (!std::isfinite(last)) {
-          RCLCPP_WARN(get_logger(), "Cube recovery needs a previous cube position");
-        } else {
-          const double bearing = cube_bearing(robot);
-          recovery_direction_ = bearing >= 0.0 ? 1.0F : -1.0F;
-          recovery_last_yaw_ = robot.yaw;
-          recovery_rotation_ = 0.0;
-          cube_recovery_active_ = true;
-          set_policy_enabled(false);
-          RCLCPP_INFO(get_logger(), "Starting cube recovery (bearing=%.1f deg)",
-            bearing * 180.0 / kPi);
-        }
+        const double bearing = cube_bearing(robot);
+        recovery_direction_ = 1.0F;
+        recovery_direction_ = bearing >= 0.0 ? 1.0F : -1.0F;
+        recovery_last_yaw_ = robot.yaw;
+        recovery_rotation_ = 0.0;
+        cube_recovery_active_ = true;
+        set_policy_enabled(false);
+        RCLCPP_INFO(get_logger(), "Starting cube recovery (bearing=%.1f deg)",
+          bearing * 180.0 / kPi);
       }
     }
     last_recovery_pressed_ = pressed;

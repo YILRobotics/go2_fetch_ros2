@@ -51,7 +51,7 @@ cube_tracker_yolo_node:
     outlier_mad_scale: 3.0
 
     # --- Tracking and smoothing ---
-    detection_timeout_s: 0.5
+    detection_timeout_s: 0.9
     velocity_window_s: 0.6
     # Values <= 0 disable low-pass filtering.
     cube_state_low_pass_cutoff_hz: 5.0
@@ -65,7 +65,7 @@ cube_tracker_yolo_node:
     camera_info_stamp_tolerance_s: 1.0
     camera_info_aspect_tolerance: 0.02
     cube_dimensions: [0.16, 0.16, 0.16]
-    cube_position_offset_xyz: [0.0, 0.0, 0.0]
+    cube_position_offset_xyz: [0.0, 0.0, 0.0] # for yolo
 
     # --- Debug visualization ---
     publish_debug_image: false
@@ -93,14 +93,14 @@ cube_tracker_pcl_node:
     min_range_m: 0.12
     max_range_m: 4.0
     # PCL voxel side length. Larger values reduce CPU use but remove cube detail.
-    voxel_leaf_m: 0.012
+    voxel_leaf_m: 0.015
     # Maximum point-to-plane distance for a point to be classified as floor.
     floor_distance_threshold_m: 0.018
     # The RANSAC floor normal must be within this angle of the odom Z axis.
     floor_max_tilt_deg: 15.0
     # RANSAC trials per cloud. Raise this if floor removal is unreliable; lower it
     # if floor fitting dominates the 33 ms processing budget at 30 Hz.
-    floor_max_iterations: 60
+    floor_max_iterations: 40
 
     # --- Euclidean clustering and cube-shape gates ---
     # Maximum 3D distance between neighboring points belonging to one cluster.
@@ -124,6 +124,8 @@ cube_tracker_pcl_node:
     # Once initialized, reject clusters farther than this from the predicted XY.
     association_gate_m: 0.60
 
+    surface_to_center_offset_m: 0.05 # added offset to be more inside the cube. plus is farther away from cam line of sight
+
     # --- Front-leg removal and occlusion merging ---
     # Frames are groups of [thigh, calf, foot], one group per leg. Capsules are
     # constructed between thigh-calf and calf-foot TF origins at the cloud stamp.
@@ -137,13 +139,13 @@ cube_tracker_pcl_node:
     # --- Friction-damped velocity EKF and delayed YOLO replay ---
     # Standard deviation of unmodelled planar cube acceleration. Higher values
     # let the filter change velocity faster but produce a less smooth estimate.
-    process_accel_std_mps2: 1.5
+    process_accel_std_mps2: 2.5
     # Friction-model time constant. Predicted velocity is multiplied by
     # exp(-elapsed/tau), so 0.25 s leaves about 1.8% after one second. A larger
     # value makes the cube coast longer; a smaller value stops it sooner.
     velocity_decay_tau_s: 0.25
     # XY position variances in m^2. Lower values trust that source more strongly.
-    pcl_measurement_variance_xy: 0.0064
+    pcl_measurement_variance_xy: 0.0035
     yolo_measurement_variance_xy: 0.0035
     # Squared Mahalanobis innovation limits. 9.21 and 13.82 approximately match
     # 99% and 99.9% gates for a two-dimensional position observation.
@@ -153,7 +155,7 @@ cube_tracker_pcl_node:
     # YOLO results older than this window are rejected.
     history_duration_s: 0.5
     # Publish cube_visible=false after neither source has passed its gates this long.
-    detection_timeout_s: 2.2
+    detection_timeout_s: 0.5
 
 
 high_level_policy_node:
@@ -184,23 +186,23 @@ high_level_policy_node:
     robot_goal_clear_radius: 0.3
 
     # --- Cube-loss recovery rotation ---
-    cube_state_timeout_s: 2.2
+    cube_state_timeout_s: 0.5
     # Select the newest tracker state at or before now-65 ms, matching training.
     cube_target_age_s: 0.065
     # Smoothly reduce the locomotion command after cube tracking becomes stale.
     cube_stale_stop_ramp_s: 1.0
     # Fixed normalized yaw command, limited by max_cmd yaw.
-    cube_recovery_angular_cmd: 0.7
-    cube_recovery_front_angle_deg: 10.0
+    cube_recovery_angular_cmd: 1.0
+    cube_recovery_front_angle_deg: 5.0
     cube_recovery_max_rotation_deg: 360.0
 
     # --- Fake observation modes ---
-    fake_observations_mode: true
+    fake_observations_mode: false
     fake_observation_seed: 0
     fake_observation_min: -1.0
     fake_observation_max: 1.0
     fake_log_every_n_steps: 100
-    fake_cube_observation_mode: true
+    fake_cube_observation_mode: false
     fake_cube_position_xy: [0.3, 0.0]
     fake_cube_velocity_xy: [0.0, 0.0]
     fake_cube_publish_period_s: 0.05
@@ -212,8 +214,8 @@ high_level_policy_node:
     sport_request_topic: /api/sport/request
     policy_world_frame: odom
     lf_foot_frame: FL_foot
-    lf_foot_tf_timeout_s: 0.02
-    cube_state_tf_timeout_s: 0.05
+    lf_foot_tf_timeout_s: 0.02 # currently not used because causing error/warning
+    cube_state_tf_timeout_s: 0.05 # currently not used because causing error/warning
     # nav_msgs/Odometry twist is normally expressed in child_frame_id.
     robot_twist_in_body_frame: true
 
@@ -230,8 +232,8 @@ high_level_policy_node:
     velocity_marker_rate_hz: 15.0
 
     # --- Policy models and inference rates ---
-    high_level_policy_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/unitree_go2_pushcube_4l/2026-07-07_10-07-42_ff_5_19/policy.engine
-    high_level_rate_hz: 15.384615
+    high_level_policy_path: /home/unitree/fetch_ws/src/go2_fetch_ros2/fetch/models/unitree_go2_pushcube_4l/2026-07-13_11-12-00_ff_5_22_10hz/policy.engine
+    high_level_rate_hz: 10.0
     high_level_num_obs: 52
 
     # --- Unitree Sport high-level control ---
@@ -250,7 +252,7 @@ high_level_policy_node:
     # Divisor used to normalize the four LowState foot-force readings.
     foot_force_scale: 80.0
     num_actions: 12
-    max_cmd: [0.6,0.4,0.8]
+    max_cmd: [0.6,0.4,0.9]
     # max_cmd: [1.0, 0.8, 1.0] ### max for hihg level
 
     # --- Joint-state fields used by the high-level observation ---

@@ -470,8 +470,7 @@ ros2 bag record -e "(/go2_fetch/.*|/go2_odometry.*|/tf|/robot_description|/tf_st
 
 ros2 bag record -e "(/go2_fetch/.*|/go2_odometry.*|/tf|/robot_description|/tf_static|/lf/lowstate|/go2/camera/image_raw/compressed|/camera/depth/color/points|/camera/color/image_raw/compressed)" -x ".*compressedDepth."
 
-ros2 bag record -e "^(/go2_fetch/.*|/go2_odometry.*|/tf|/robot_description|/tf_static|/lf/lowstate|/camera/depth/color/points|/camera/color/
-image_raw/compressed)$" -x ".*compressedDepth.*"
+ros2 bag record -e "^(/go2_fetch/.*|/go2_odometry.*|/tf|/robot_description|/tf_static|/lf/lowstate|/camera/depth/color/points|/camera/color/image_raw/compressed)$" -x ".*compressedDepth.*"
 ```
 
 Now the cause is clear: rosbag’s default 100 MiB cache fills after about 7.3 seconds—exactly when cube
