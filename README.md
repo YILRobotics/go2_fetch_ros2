@@ -1,5 +1,17 @@
 # go2_fetch_ros2
 
+<p align="center">
+  <a href="https://ferdinandhartmann.github.io/go2_fetch_rl/">
+    <strong>🌐 View the Project Website</strong><br>
+    https://ferdinandhartmann.github.io/go2_fetch_rl/
+  </a>
+  <br><br>
+  <a href="https://github.com/ferdinandhartmann/go2_fetch_rl">
+    <strong>🧠 Training Repository (RL Policy)</strong><br>
+    github.com/ferdinandhartmann/go2_fetch_rl
+  </a>
+</p>
+
 ROS 2 packages for the Unitree Go2 robot fetch project. This project runs an RL policy to push back a play cube.
 
 > Always disable the Conda environment when using ROS 2.
